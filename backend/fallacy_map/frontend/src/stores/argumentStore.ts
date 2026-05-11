@@ -24,6 +24,27 @@ export interface VeracityEvent {
   type: 'fallacy' | 'bypass' | 'divide' | 'reset'
 }
 
+export interface PublicationMarker {
+  id: string
+  headline: string
+  source_url: string
+  source_name: string
+  lat: number | null
+  lon: number | null
+  veracity_score: number
+  fallacy_types: string[]
+  color: string
+}
+
+export interface ManifoldJump {
+  marker_id: string
+  headline: string
+  veracity_score: number
+  fallacy_types: string[]
+  position: [number, number, number]
+  color: string
+}
+
 interface ArgumentStore {
   argumentId: string | null
   title: string
@@ -39,6 +60,9 @@ interface ArgumentStore {
   mesh_data: number[][]
   veracity_events: VeracityEvent[]
   
+  activeMarker: PublicationMarker | null
+  manifoldJump: ManifoldJump | null
+  
   setArgumentId: (id: string) => void
   setTitle: (title: string) => void
   setVactive: (v: number) => void
@@ -48,6 +72,9 @@ interface ArgumentStore {
   addVeracityEvent: (event: VeracityEvent) => void
   triggerInverion: (rootId: string) => void
   reset: () => void
+  
+  jumpToMarker: (marker: PublicationMarker) => void
+  clearManifoldJump: () => void
   
   getStateFromV: (V: number) => VeracityState
 }
@@ -66,6 +93,9 @@ export const useArgumentStore = create<ArgumentStore>((set, get) => ({
   claims: [],
   mesh_data: [],
   veracity_events: [],
+  
+  activeMarker: null,
+  manifoldJump: null,
   
   setArgumentId: (id) => set({ argumentId: id }),
   setTitle: (title) => set({ title }),
@@ -101,7 +131,34 @@ export const useArgumentStore = create<ArgumentStore>((set, get) => ({
     fallacies: [],
     claims: [],
     mesh_data: [],
-    veracity_events: []
+    veracity_events: [],
+    activeMarker: null,
+    manifoldJump: null
+  }),
+  
+  jumpToMarker: (marker) => {
+    const jump: ManifoldJump = {
+      marker_id: marker.id,
+      headline: marker.headline,
+      veracity_score: marker.veracity_score,
+      fallacy_types: marker.fallacy_types,
+      position: [marker.lon || 0, 0, marker.lat || 0],
+      color: marker.color
+    }
+    set({ 
+      activeMarker: marker,
+      manifoldJump: jump,
+      title: marker.headline,
+      V_active: marker.veracity_score,
+      state: marker.veracity_score > 0.8 ? 'ignition' : 
+            marker.veracity_score > 0.5 ? 'healthy' : 
+            marker.veracity_score > 0.3 ? 'stressed' : 'critical'
+    })
+  },
+  
+  clearManifoldJump: () => set({ 
+    activeMarker: null,
+    manifoldJump: null 
   }),
   
   getStateFromV: (V) => {

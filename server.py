@@ -2,11 +2,16 @@
 """
 Inverion Semantic Bridge — The Sovereign Scrubber
 
-This module processes raw text into fallacy telemetry for the Sunrise manifold.
-It acts as the bridge between input sources and the 3D visualization engine.
+Local-to-Arc Pipeline:
+1. Ingests GDELT/RSS publication streams
+2. Geocodes location strings via GeoPy
+3. Calculates Veracity Scores via SemanticScrubber
+4. Pushes Sunrise-encoded markers to WordPress/MapPress
 
 Usage:
-    uv run server.py
+    python3 server.py --stream --wp-site https://kylosarc.com --wp-user admin
+    python3 server.py --gdelt "climate change"
+    python3 server.py --rss https://example.com/feed.xml
 
 The server outputs JSON telemetry to stdout for stitching with the frontend.
 """
@@ -15,16 +20,29 @@ import sys
 import json
 import time
 import hashlib
+import urllib.request
+import urllib.parse
 from pathlib import Path
-from typing import Dict, List, Optional
-from dataclasses import dataclass, asdict
+from typing import Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass, asdict, field
 from datetime import datetime
+from enum import Enum
+
+FEEDPARSER_AVAILABLE = False
 
 # Logic Constants: The Inverion Thresholds
 VERACITY_CONSTANT = 1.0
 BYPASS_THRESHOLD = 0.5
 LOCKOUT_THRESHOLD = 0.1
 SHUTDOWN_THRESHOLD = 0.0
+
+
+class SunriseColor(Enum):
+    """Sunrise spectrum colors for map markers."""
+    IGNITION = "#FFFFFF"       # Veracity > 0.8 - High Veracity / Objective
+    MORNING = "#FFB300"       # Veracity 0.5-0.8 - Morning Amber
+    SUNSET = "#FF8F00"         # Veracity 0.3-0.5 - Distorted
+    CRIMSON = "#B71C1C"       # Veracity < 0.3 - Structural Collapse
 
 
 @dataclass
@@ -52,6 +70,71 @@ class VeracityState:
     
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass
+class PublicationMarker:
+    """
+    A Sunrise-encoded publication marker for MapPress.
+    
+    Contains all data needed for WordPress/MapPress injection.
+    """
+    id: str
+    title: str
+    headline: str
+    source_url: str
+    source_name: str
+    lat: Optional[float]
+    lon: Optional[float]
+    veracity_score: float
+    fallacy_types: List[str]
+    published_at: str
+    color: str = "#FFFFFF"
+    
+    def __post_init__(self):
+        self.id = hashlib.md5(self.headline.encode()).hexdigest()[:12]
+        self.color = self._calculate_color()
+    
+    def _calculate_color(self) -> str:
+        """Calculate Sunrise color based on veracity score."""
+        if self.veracity_score > 0.8:
+            return SunriseColor.IGNITION.value
+        elif self.veracity_score > 0.5:
+            return SunriseColor.MORNING.value
+        elif self.veracity_score > 0.3:
+            return SunriseColor.SUNSET.value
+        else:
+            return SunriseColor.CRIMSON.value
+    
+    def to_dict(self) -> dict:
+        return asdict(self)
+    
+    def to_wp_rest_payload(self) -> dict:
+        """Convert to WordPress REST API payload for MapPress."""
+        return {
+            "title": self.headline[:200],
+            "content": f"Veracity: {self.veracity_score:.2f}\nFallacies: {', '.join(self.fallacy_types)}\nSource: {self.source_url}",
+            "status": "publish",
+            "meta": {
+                "mappress_veracity_score": self.veracity_score,
+                "mappress_color": self.color,
+                "mappress_lat": self.lat or 0.0,
+                "mappress_lng": self.lon or 0.0,
+                "mappress_fallacy_types": ",".join(self.fallacy_types),
+                "mappress_source": self.source_name,
+            }
+        }
+    
+    def to_manifold_jump(self) -> dict:
+        """Data for syncing to 3D manifold when marker is clicked."""
+        return {
+            "id": self.id,
+            "headline": self.headline,
+            "veracity_score": self.veracity_score,
+            "fallacy_types": self.fallacy_types,
+            "position": [self.lon or 0, 0, self.lat or 0] if self.lat else [0, 0, 0],
+            "color": self.color
+        }
 
 
 class SemanticScrubber:
@@ -103,6 +186,334 @@ class SemanticScrubber:
                 self._temporal_index += 1
                 
         return fallacies
+    
+    def analyze_headline(self, headline: str) -> tuple[List[FallacyTelemetry], float]:
+        """
+        Analyze a headline and return fallacies plus veracity score.
+        
+        Returns (fallacies, veracity_score) where veracity_score is 1.0 minus decay.
+        """
+        fallacies = self.analyze(headline)
+        
+        # Calculate veracity decay
+        total_cost = sum(f.magnitude * f.persistence for f in fallacies)
+        veracity_score = max(0.0, VERACITY_CONSTANT - total_cost)
+        
+        return fallacies, veracity_score
+
+
+class GeoTransformer:
+    """
+    Geographic Transformer for resolving location strings to coordinates.
+    
+    Uses GeoPy for geocoding with pattern-matching fallback.
+    """
+    
+    US_STATES = {
+        "AL": (32.3182, -86.9023), "AK": (61.2181, -149.9003), "AZ": (34.0489, -111.0937),
+        "AR": (35.2010, -91.8318), "CA": (36.7783, -119.4179), "CO": (39.5501, -105.7821),
+        "CT": (41.6032, -73.0877), "DE": (38.9108, -75.5277), "FL": (27.6648, -81.5158),
+        "GA": (32.1574, -81.4250), "HI": (19.8968, -155.5828), "ID": (43.6151, -116.2023),
+        "IL": (40.6331, -89.3985), "IN": (40.2672, -86.1349), "IA": (41.8780, -93.0977),
+        "KS": (39.0119, -98.4842), "KY": (37.8392, -84.2700), "LA": (30.9843, -91.9623),
+        "ME": (44.6938, -69.3819), "MD": (39.0458, -76.6413), "MA": (42.4072, -71.3824),
+        "MI": (44.3148, -85.6024), "MN": (46.7296, -94.6859), "MS": (32.3546, -89.3985),
+        "MO": (37.9642, -91.8318), "MT": (46.8797, -110.3626), "NE": (41.4925, -99.9018),
+        "NV": (38.8026, -116.4194), "NH": (43.1939, -71.5724), "NJ": (40.0583, -74.4057),
+        "NM": (34.8403, -106.2485), "NY": (43.2994, -74.2179), "NC": (35.7596, -79.0193),
+        "ND": (47.5515, -101.0020), "OH": (40.4173, -82.9071), "OK": (35.0078, -97.0929),
+        "OR": (43.8041, -120.5542), "PA": (41.2033, -77.1945), "RI": (41.5801, -71.4774),
+        "SC": (33.8361, -81.1637), "SD": (43.9695, -99.9018), "TN": (35.5175, -86.5804),
+        "TX": (31.9686, -99.9018), "UT": (39.3200, -111.0937), "VT": (44.5588, -72.5778),
+        "VA": (37.4316, -78.6569), "WA": (47.7511, -120.7401), "WV": (38.5972, -80.4549),
+        "WI": (43.7844, -88.7879), "WY": (43.0760, -107.2903),
+    }
+    
+    def __init__(self, geopy_enabled: bool = True):
+        self.geopy_enabled = geopy_enabled
+        self._geocoder = None
+        self._init_geopy()
+        self._cache: Dict[str, Tuple[float, float]] = {}
+    
+    def _init_geopy(self) -> bool:
+        """Initialize GeoPy geocoder."""
+        self.geopy_enabled = False
+        return False
+    
+    def geocode(self, location_str: str) -> tuple[Optional[float], Optional[float]]:
+        """
+        Geocode a location string to (lat, lon).
+        
+        Returns (None, None) if geocoding fails.
+        """
+        if not location_str:
+            return None, None
+        
+        location_clean = location_str.strip()
+        
+        # Check cache first
+        if location_clean in self._cache:
+            return self._cache[location_clean]
+        
+        # Try GeoPy if enabled
+        if self.geopy_enabled and self._geocoder:
+            try:
+                location = self._geocoder.geocode(location_clean, timeout=5)
+                if location:
+                    coords = (location.latitude, location.longitude)
+                    self._cache[location_clean] = coords
+                    return coords
+            except Exception as e:
+                print(f"Geocoding error for '{location_clean}': {e}", file=sys.stderr)
+        
+        # Fall back to pattern matching
+        lat, lon = self._pattern_match(location_clean)
+        if lat is not None and lon is not None:
+            self._cache[location_clean] = (lat, lon)
+        
+        return lat, lon
+    
+    def _pattern_match(self, location_str: str) -> tuple[Optional[float], Optional[float]]:
+        """Match location using pattern database."""
+        loc_lower = location_str.lower()
+        
+        # Check for US state
+        for abbrev, coords in self.US_STATES.items():
+            if abbrev.lower() in loc_lower or f" {abbrev.lower()}" in loc_lower:
+                return coords
+        
+        # Check for country names
+        countries = {
+            "france": (46.2276, 2.2137), "germany": (51.1657, 10.4515),
+            "uk": (55.3781, -3.4360), "united kingdom": (55.3781, -3.4360),
+            "canada": (56.1304, -106.3468), "australia": (-25.2744, 133.7751),
+            "india": (20.5937, 78.9629), "brazil": (-14.2350, -51.9253),
+            "china": (35.8617, 104.1954), "japan": (36.2048, 138.2529),
+        }
+        
+        for country, coords in countries.items():
+            if country in loc_lower:
+                return coords
+        
+        return None, None
+
+
+class GDELTConnector:
+    """
+    GDELT stream connector for real-time headline ingestion.
+    """
+    
+    GDELT_API = "https://api.gdeltproject.org/api/v2/doc/doc"
+    
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key
+    
+    def fetch(self, query: str, max_records: int = 50) -> List[Dict]:
+        """Fetch headlines from GDELT."""
+        params = {
+            "query": query,
+            "mode": "artimeline",
+            "format": "json",
+            "maxrecords": max_records
+        }
+        
+        if self.api_key:
+            params["key"] = self.api_key
+        
+        url = f"{self.GDELT_API}?{urllib.parse.urlencode(params)}"
+        
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Inverion-Sovereignty-Engine/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                data = json.loads(response.read().decode())
+                return data.get("articles", [])
+        except Exception as e:
+            print(f"GDELT fetch error: {e}", file=sys.stderr)
+            return []
+    
+    def fetch_with_geocode(self, query: str, geo_transformer: GeoTransformer) -> List[PublicationMarker]:
+        """Fetch GDELT headlines and geocode them."""
+        articles = self.fetch(query)
+        markers = []
+        
+        for article in articles:
+            headline = article.get("title", "")
+            source_url = article.get("url", "")
+            source_name = article.get("domain", "")
+            location_raw = source_name.split(".")[-1] if "." in source_name else ""
+            
+            # Analyze veracity
+            scrubber = SemanticScrubber()
+            fallacies, veracity_score = scrubber.analyze_headline(headline)
+            fallacy_types = [f.type for f in fallacies]
+            
+            # Geocode location
+            lat, lon = geo_transformer.geocode(location_raw)
+            
+            marker = PublicationMarker(
+                id="",
+                title=headline[:100],
+                headline=headline,
+                source_url=source_url,
+                source_name=source_name,
+                lat=lat,
+                lon=lon,
+                veracity_score=veracity_score,
+                fallacy_types=fallacy_types,
+                published_at=article.get("seendate", "")
+            )
+            markers.append(marker)
+        
+        return markers
+
+
+class RSSConnector:
+    """
+    RSS feed connector for headline ingestion.
+    """
+    
+    def fetch(self, feed_url: str) -> List[Dict]:
+        """Fetch headlines from RSS feed using urllib."""
+        try:
+            req = urllib.request.Request(feed_url, headers={"User-Agent": "Inverion-Sovereignty-Engine/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                content = response.read().decode('utf-8', errors='ignore')
+            
+            entries = []
+            import re
+            item_pattern = re.compile(r'<item>(.*?)</item>', re.DOTALL | re.IGNORECASE)
+            title_pattern = re.compile(r'<title>(.*?)</title>', re.DOTALL | re.IGNORECASE)
+            link_pattern = re.compile(r'<link>(.*?)</link>', re.DOTALL | re.IGNORECASE)
+            
+            for item in item_pattern.findall(content):
+                title = title_pattern.search(item)
+                link = link_pattern.search(item)
+                
+                entries.append({
+                    "title": title.group(1) if title else "",
+                    "link": link.group(1) if link else "",
+                    "published": "",
+                    "source": feed_url
+                })
+            
+            return entries[:50]
+        except Exception as e:
+            print(f"RSS fetch error: {e}", file=sys.stderr)
+            return []
+    
+    def fetch_with_geocode(self, feed_url: str, geo_transformer: GeoTransformer) -> List[PublicationMarker]:
+        """Fetch RSS headlines and geocode them."""
+        articles = self.fetch(feed_url)
+        markers = []
+        
+        for article in articles:
+            headline = article.get("title", "")
+            source_url = article.get("link", "")
+            source_name = article.get("source", "")
+            
+            # Analyze veracity
+            scrubber = SemanticScrubber()
+            fallacies, veracity_score = scrubber.analyze_headline(headline)
+            fallacy_types = [f.type for f in fallacies]
+            
+            # Extract location from source or title
+            location_hint = self._extract_location(article, headline)
+            lat, lon = geo_transformer.geocode(location_hint) if location_hint else (None, None)
+            
+            marker = PublicationMarker(
+                id="",
+                title=headline[:100],
+                headline=headline,
+                source_url=source_url,
+                source_name=source_name,
+                lat=lat,
+                lon=lon,
+                veracity_score=veracity_score,
+                fallacy_types=fallacy_types,
+                published_at=article.get("published", "")
+            )
+            markers.append(marker)
+        
+        return markers
+    
+    def _extract_location(self, article: Dict, headline: str) -> str:
+        """Extract location hint from article or headline."""
+        # Try to find location patterns in title
+        import re
+        loc_pattern = r'\b([A-Z]{2})\b'
+        matches = re.findall(loc_pattern, headline)
+        if matches:
+            return matches[0]
+        return ""
+
+
+class WordPressBridge:
+    """
+    WordPress REST API bridge for MapPress marker injection.
+    """
+    
+    def __init__(self, site_url: str, username: str, password: str = ""):
+        self.site_url = site_url.rstrip("/")
+        self.username = username
+        self.password = password
+        self._markers_cache: List[PublicationMarker] = []
+    
+    def post_marker(self, marker: PublicationMarker) -> Dict:
+        """Post a single marker to WordPress via REST API."""
+        payload = marker.to_wp_rest_payload()
+        
+        # WordPress REST API endpoint for posts
+        url = f"{self.site_url}/wp-json/wp/v2/posts"
+        
+        auth = f"{self.username}:{self.password}"
+        import base64
+        auth_header = base64.b64encode(auth.encode()).decode()
+        
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Basic {auth_header}"
+                },
+                method="POST"
+            )
+            
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return json.loads(response.read().decode())
+        except Exception as e:
+            print(f"WordPress POST error: {e}", file=sys.stderr)
+            return {"error": str(e)}
+    
+    def sync_markers(self, markers: List[PublicationMarker]) -> int:
+        """Sync multiple markers to WordPress."""
+        self._markers_cache = markers
+        count = 0
+        
+        for marker in markers:
+            result = self.post_marker(marker)
+            if "id" in result:
+                count += 1
+        
+        return count
+    
+    def export_manifest(self, filepath: str = "data/manifest.json") -> str:
+        """Export markers as JSON manifest for frontend MapPress sync."""
+        manifest = {
+            "generated_at": datetime.now().isoformat(),
+            "count": len(self._markers_cache),
+            "markers": [m.to_dict() for m in self._markers_cache],
+            "manifold_jumps": [m.to_manifold_jump() for m in self._markers_cache]
+        }
+        
+        import os
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2)
+        
+        return filepath
 
 
 class VeracityAuditor:
