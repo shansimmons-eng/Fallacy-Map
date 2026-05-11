@@ -470,48 +470,101 @@ During playback, a secondary view shows the fallacy cascade:
 
 ---
 
-## 11. File Structure
+## 11. File Structure (Inverion Architecture)
 
 ```
 fallacy-map/
-├── frontend/
+├── engine/                          # The 3D Manifold Engine
+│   ├── gravity_wells/               # Inverse Square displacement math
+│   │   ├── wells.py                 # FallacyWell, GravityWellRegistry
+│   │   └── manifold_calculator.py   # Mesh deformation calculations
+│   ├── semantic_bridge/             # Semantic-to-Spatial translation
+│   │   ├── bridge.py                # SemanticBridge, SemanticNode, ManifoldUpdate
+│   │   └── llm_analyzer.py          # LLM integration (pattern + API)
+│   ├── sliding_window/              # Real-time input buffering
+│   │   └── buffer.py                # SlidingWindowBuffer, StreamBridge
+│   └── manifold/                    # Three.js/R3F rendering
+│       ├── ManifoldCanvas.tsx       # Main 3D canvas
+│       └── shaders/                 # GLSL shaders
+│           ├── manifold.vert.glsl   # Vertex displacement + ignition glow
+│           └── manifold.frag.glsl   # Heat map + corruption static
+│
+├── auditor/                        # The Veracity Auditor
+│   ├── veracity_auditor.py         # V_active tracking + Inverion Gate
+│   └── fallacy_detector.py         # Pattern matching + taxonomy
+│
+├── data/                           # Local archival (Sovereign Ledger)
+│   ├── archive/                     # Analyzed transcripts (.json)
+│   ├── topology/                    # Coordinate maps (.json)
+│   └── ledger/                      # Veracity history (SQLite)
+│
+├── ui/                             # The React interface
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── ManifoldCanvas.tsx    # Three.js rendering
-│   │   │   ├── ClaimNode.tsx         # Individual claim nodes
-│   │   │   ├── FallacyOverlay.tsx    # Click-to-inspect panel
-│   │   │   ├── TimelinePlayer.tsx    # Playback controls
-│   │   │   ├── VeracityMeter.tsx     # V_active gauge + state indicator
+│   │   │   ├── VeracityMeter.tsx    # V_active gauge + state indicator
 │   │   │   └── InverionDivideOverlay.tsx  # Lockout diagnostic display
-│   │   ├── shaders/
-│   │   │   ├── manifold.vert.glsl    # Vertex displacement + ignition glow
-│   │   │   └── manifold.frag.glsl    # Heat map + corruption static
 │   │   ├── stores/
-│   │   │   └── argumentStore.ts      # Zustand store (includes V_active)
+│   │   │   └── argumentStore.ts      # Zustand store
 │   │   ├── hooks/
 │   │   │   └── useWebSocket.ts       # Real-time updates
 │   │   └── App.tsx
 │   └── package.json
-├── backend/
+│
+├── backend/                        # FastAPI backend
 │   ├── app/
-│   │   ├── routers/
-│   │   │   ├── analyze.py            # Streaming analysis endpoint
-│   │   │   └── snapshots.py         # Playback snapshot retrieval
-│   │   ├── services/
-│   │   │   ├── llm_analyzer.py       # LLM integration
-│   │   │   ├── fallacy_detector.py   # Pattern matching
-│   │   │   ├── manifold_calculator.py # Physics simulation
-│   │   │   └── veracity_auditor.py   # V_active tracking + Inverion Gate
-│   │   ├── models/
-│   │   │   ├── claim.py
-│   │   │   ├── fallacy.py
-│   │   │   └── argument.py
-│   │   └── database.py               # SQLAlchemy setup
-│   ├── fallacy_taxonomy.json         # Full 50+ fallacy definitions
+│   │   ├── routers/                 # API endpoints
+│   │   ├── models/                  # SQLAlchemy models
+│   │   └── database.py              # SQLite setup
+│   ├── fallacy_taxonomy.json        # 50+ fallacy definitions
 │   ├── requirements.txt
 │   └── main.py
-└── README.md
+│
+├── sources/                        # Input sources
+│   └── README.md                    # Source documentation
+│
+├── .github/workflows/
+│   └── veracity-audit.yml          # GitHub Actions for audit logging
+│
+├── CONTRIBUTING.md                 # Inverion Protocol coding standards
+├── README.md                       # Link to KylosArc.com
+├── design.md                       # Design documentation
+├── SECURITY.md                     # Security considerations
+└── SPEC.md                         # This specification
 ```
+
+---
+
+## 11.1 The Inverion Protocol Standards
+
+### Data Sovereignty
+- All external API calls must be wrapped in a Local Scrubber
+- No `eval` or unsecured remote scripts
+- All processed logic exportable to local Shadow Archive
+
+### Veracity Audit
+- Every function modifying the Manifold must pass through the Veracity Gate
+- Sudden spikes in node displacement (> 0.5 per tick) trigger Bypass Lockout
+- If V_active drops to 0, UI enters Stasis Mode (Crimson monochrome)
+
+### Mathematical Rigor
+- Use Inverse Square logic for all gravity wells: `displacement = magnitude / distance²`
+- All particle/node updates must use Float32Arrays for performance
+- ToneMapping must be disabled for Ignition (HDR Breakthrough)
+
+### Input Sources
+
+| Source | Implementation | Purpose |
+|--------|---------------|---------|
+| Live Stream | `StreamBridge` + `SlidingWindowBuffer` | Real-time (YouTube, Zoom, Mic) |
+| Static Archive | `StreamBridge.ingest_file()` | Deep analysis (.txt, .pdf, .json) |
+| Sovereign Ledger | `data/ledger/` | Immutable veracity record |
+
+### Map Sources
+
+| Layer | Purpose | Axis Mapping |
+|-------|---------|-------------|
+| Logic Manifold | Procedural from Fallacy Schema | X=Temporal, Y=Relationship, Z=Gravity |
+| Comparative Layer | Perfectly Rational Model | Invisible control layer |
 
 ---
 
