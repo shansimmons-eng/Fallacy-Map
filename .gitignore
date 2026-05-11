@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backend
+backend/data/*.db
+backend/data/*.db-journal
+~/.fallacy_map/
+*.log
+
+# Frontend
+backend/fallacy_map/frontend/node_modules/
+backend/fallacy_map/frontend/dist/
+backend/fallacy_map/frontend/.env
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Misc
+*.bak
+*.tmp
+.env
+.env.local
+
+# Project specific
+.codemad/
+.coderoon/
