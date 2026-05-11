@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.5.3",
     "python-dotenv>=1.0.0",
     "httpx>=0.28.0",
+    "geopy>=2.4.0",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +28,8 @@ build-backend = "hatchling.build"
 
 [project.scripts]
 inverion-bridge = "server:main"
+gdelt-scraper = "engine.gdeltscraper:main"
+geo-transform = "engine.geo_transformer:main"
 
 [tool.ruff]
 line-length = 100

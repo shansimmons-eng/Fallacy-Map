@@ -669,3 +669,50 @@ class VeracityAuditor:
 ## Appendix A: Full Fallacy Taxonomy
 
 (Full table with 50+ entries — stored in `backend/fallacy_taxonomy.json`)
+
+---
+
+## Appendix B: The KylosArc Sovereignty Engine
+
+### B.1 Geographic Ledger (WordPress/MapPress Layer)
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| GDELT Scraper | `engine/gdeltscraper.py` | Real-time headline ingestion |
+| Geographic Transformer | `engine/geo_transformer.py` | Location → lat/long via GeoPy |
+| MapPress Bridge | `MapPressBridge` class | WPGetAPI injection |
+
+### B.2 Sunrise Color Coding
+
+| Veracity Score | Sunrise Color | Meaning |
+|---------------|---------------|---------|
+| > 0.8 | `#FFFFFF` (White) | High Veracity / Objective Reporting |
+| 0.5-0.8 | `#FFD54F` (Amber) | Stable / Morning Light |
+| 0.2-0.5 | `#FF8F00` (Deep Amber) | Logical Decay / Fallacy Detected |
+| < 0.2 | `#880E4F` (Crimson) | Structural Collapse / Disinformation |
+
+### B.3 3D Semantic Manifold (2000-node InstancedMesh)
+
+| Property | Value |
+|----------|-------|
+| Node Count | 2,000 (64×64 grid) |
+| Geometry | Stretched quad (1:4 Y-ratio for velocity alignment) |
+| X-Axis | Temporal sequence |
+| Y-Axis | Connectivity (Non-sequiturs create Y-spikes) |
+| Z-Axis | Inverse Square gravity wells (1/d²) |
+| Tone Mapping | `THREE.NoToneMapping` (HDR breakthrough) |
+| Blending | `THREE.AdditiveBlending` |
+
+### B.4 Veracity Gate & Lockout
+
+| Threshold | State | Behavior |
+|-----------|-------|----------|
+| V_active > 0.5 | Normal | All animations active |
+| ΔV > 0.5/tick | Bypass | 3-second lockout warning |
+| V_active < 0.1 | Eclipse | All animations freeze, palette monochrome+crimson |
+
+### B.5 Sovereignty Standards
+
+1. **No AI Bridge Phrases** - The data must speak for itself through visual resonance
+2. **Local-First Processing** - All audits logged to Shadow Archive (SQLite)
+3. **Immutable Ledger** - Every veracity event hashed for forensic record
