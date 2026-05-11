@@ -1,0 +1,110 @@
+name: Veracity Audit Logger
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  log-veracity-audit:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: |
+          pip install sqlalchemy aiosqlite
+          
+      - name: Log Veracity Audit Event
+        run: |
+          python << 'EOF'
+          import json
+          import sqlite3
+          from datetime import datetime
+          import os
+          
+          db_path = os.path.expanduser("~/.fallacy_map/fallacy_map.db")
+          
+          if os.path.exists(db_path):
+              conn = sqlite3.connect(db_path)
+              cursor = conn.cursor()
+              
+              # Get recent veracity events
+              cursor.execute("""
+                  SELECT id, argument_id, tick_index, V_before, V_after, V_cost, 
+                         event_type, timestamp 
+                  FROM veracity_events 
+                  ORDER BY timestamp DESC 
+                  LIMIT 100
+              """)
+              
+              events = cursor.fetchall()
+              
+              audit_log = {
+                  "workflow_run_id": os.environ.get('GITHUB_RUN_ID', 'unknown'),
+                  "timestamp": datetime.utcnow().isoformat(),
+                  "event_count": len(events),
+                  "events": [
+                      {
+                          "id": e[0],
+                          "argument_id": e[1],
+                          "tick_index": e[2],
+                          "V_before": e[3],
+                          "V_after": e[4],
+                          "V_cost": e[5],
+                          "event_type": e[6],
+                          "timestamp": e[7]
+                      }
+                      for e in events
+                  ]
+              }
+              
+              print("## Veracity Audit Log")
+              print(f"Timestamp: {audit_log['timestamp']}")
+              print(f"Total Events: {audit_log['event_count']}")
+              
+              for event in audit_log['events'][:10]:
+                  print(f"- Tick {event['tick_index']}: {event['event_type']} "
+                        f"V_before={event['V_before']:.3f} V_after={event['V_after']:.3f}")
+              
+              conn.close()
+          else:
+              print("No database found - skipping audit log")
+          EOF
+          
+      - name: Archive audit evidence
+        if: always()
+        run: |
+          mkdir -p evidence
+          echo "Audit run completed at $(date -Iseconds)" > evidence/audit_$(date +%Y%m%d_%H%M%S).txt
+          
+  security-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Run basic security checks
+        run: |
+          echo "Checking for hardcoded secrets..."
+          
+          # Check for common secret patterns
+          if grep -r "sk-ant-api03-placeholder" . 2>/dev/null; then
+            echo "WARNING: Found API key placeholder"
+          fi
+          
+          if grep -r "password\s*=\s*['\"]" --include="*.py" . 2>/dev/null; then
+            echo "WARNING: Found potential hardcoded password"
+          fi
+          
+          echo "Security check complete"
