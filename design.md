@@ -23,7 +23,82 @@ The Fallacy Map transforms argument analysis into navigable topography. Sound lo
 - Edge propagation: Animated dash pattern flowing toward false conclusions
 - Camera: Smooth damped follow with 0.08 lerp factor
 
-## Visual States
+## The Sunrise Color-Ramp Logic
+
+The **Inverion Sunrise Theme** maps Veracity Depth to a specific solar spectrum. The manifold's core represents "Ignition"—the moment of clarity—and shifts through sunrise colors as logic deforms into fallacy gravity wells.
+
+### Color Ramp Table
+
+| State | Distance to Origin | Hex Color | Visual Meaning |
+|-------|-------------------|-----------|----------------|
+| **Ignition** | 0.0 - 0.2 | `#FFFFFF` | Blinding white-hot clarity; objective truth |
+| **Stable** | 0.2 - 1.5 | `#FFF9C4` → `#FFD54F` | Morning yellow; sound reasoning |
+| **Distorted** | 1.5 - 4.0 | `#FF8F00` → `#E65100` | Golden hour amber; fallacy detected |
+| **Void** | 4.0+ | `#4E342E` → `#212121` | Deep shadow; logic collapse |
+| **Eclipse (Lockout)** | Gate Closed | `#880E4F` / `#000000` | Total structural failure; pre-dawn indigo |
+
+### The Sunrise Gradient
+
+```
+#FFFFFF (Ignition)
+    ↓ (distance 0.0-0.2)
+#FFF9C4 (Pale Goldenrod)
+    ↓ (distance 0.2-1.5)
+#FFD54F (Morning Amber)
+    ↓ (distance 1.5-4.0)
+#FF8F00 (Vibrant Orange)
+    ↓ (distance 4.0+)
+#E65100 (Deep Burnt Orange)
+    ↓
+#4E342E (Shadow Brown)
+    ↓
+#212121 (Deep Void)
+    ↓ (V_active < 0.1)
+#880E4F (Eclipse Crimson)
+    ↓
+#000000 (Total Eclipse)
+```
+
+### Implementation (GLSL)
+
+```glsl
+// Sunrise Color Ramp - lerp based on distanceToOrigin
+vec3 sunriseColorRamp(float distance) {
+    if (distance < 0.2) {
+        return vec3(1.0, 1.0, 1.0);  // #FFFFFF - Blinding Ignition
+    } else if (distance < 1.5) {
+        float t = (distance - 0.2) / 1.3;
+        return mix(vec3(1.0, 0.98, 0.77), vec3(1.0, 0.84, 0.31), t);  // #FFF9C4 → #FFD54F
+    } else if (distance < 4.0) {
+        float t = (distance - 1.5) / 2.5;
+        return mix(vec3(1.0, 0.56, 0.0), vec3(0.9, 0.32, 0.0), t);  // #FF8F00 → #E65100
+    } else if (distance < 8.0) {
+        float t = (distance - 4.0) / 4.0;
+        return mix(vec3(0.9, 0.32, 0.0), vec3(0.26, 0.2, 0.18), t);  // #E65100 → #4E342E
+    } else {
+        float t = clamp((distance - 8.0) / 4.0, 0.0, 1.0);
+        return mix(vec3(0.26, 0.2, 0.18), vec3(0.13, 0.13, 0.13), t);  // #4E342E → #212121
+    }
+}
+```
+
+### Shader Requirements
+
+- **Tone Mapping:** `THREE.NoToneMapping` — Required for HDR Ignition breakthrough
+- **Blending:** `THREE.AdditiveBlending` — Creates bloom effect at core
+- **Intensity Overdrive:** R, G, B values can exceed 1.0 for Ignition (white-hot effect)
+
+### Veracity Meter States
+
+| State | V_active | Sunrise Color | Animation |
+|-------|---------|--------------|----------|
+| Ignition | > 0.8 | `#FFFFFF` | Soft pulse/bloom |
+| Morning | 0.6-0.8 | `#FFF9C4` → `#FFD54F` | Stable glow |
+| Distorted | 0.3-0.6 | `#FF8F00` | Faster pulse |
+| Critical | 0.1-0.3 | `#E65100` | Rapid crimson pulse |
+| Eclipse | ≤ 0.1 | `#880E4F` / `#000000` | **LOCKOUT** - All animations freeze |
+
+## Visual States (Legacy Reference)
 
 | V_active Range | State | Manifold Color | Center Glow |
 |---------------|-------|---------------|------------|
