@@ -22,6 +22,7 @@ import time
 import hashlib
 import urllib.request
 import urllib.parse
+import urllib.error
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, asdict, field
@@ -445,6 +446,198 @@ class RSSConnector:
         if matches:
             return matches[0]
         return ""
+
+
+class MapPressBridge:
+    """
+    MapPress REST API bridge for injecting markers into Map ID 2.
+    
+    Hardcoded for KylosArc.com Geographic Handshake.
+    """
+    
+    MAP_ID = 2  # Hardcoded target map
+    
+    SUNRSE_ICON_MAP = {
+        "#FFFFFF": 1,  # White-Hot (Ignition) - Veracity > 0.8
+        "#FFB300": 2,  # Morning Amber - Veracity 0.4-0.7
+        "#880E4F": 3,  # Shadow Crimson - Veracity < 0.3
+        "#FF8F00": 4,  # Sunset Orange - Veracity 0.3-0.5
+    }
+    
+    def __init__(self, site_url: str, username: str, password: str = ""):
+        self.site_url = site_url.rstrip("/")
+        self.username = username
+        self.password = password
+        self._markers_cache: List[PublicationMarker] = []
+        self._archive_dir = "data/archive/shadow"
+    
+    def _get_auth_header(self) -> str:
+        """Get base64 auth header for WordPress."""
+        import base64
+        auth = f"{self.username}:{self.password}"
+        return base64.b64encode(auth.encode()).decode()
+    
+    def _get_icon_id(self, veracity_score: float) -> int:
+        """Map veracity score to Sunrise icon ID."""
+        if veracity_score > 0.8:
+            return self.SUNRSE_ICON_MAP["#FFFFFF"]
+        elif veracity_score > 0.5:
+            return self.SUNRSE_ICON_MAP["#FFB300"]
+        elif veracity_score > 0.3:
+            return self.SUNRSE_ICON_MAP["#FF8F00"]
+        else:
+            return self.SUNRSE_ICON_MAP["#880E4F"]
+    
+    def post_marker(self, marker: PublicationMarker) -> Dict:
+        """
+        Post a single marker to MapPress Map ID 2.
+        
+        MapPress uses a custom post type 'mappress_marker'.
+        """
+        url = f"{self.site_url}/wp-json/wp/v2/mappress_marker"
+        
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps({
+                    "mapid": self.MAP_ID,
+                    "title": marker.headline[:200],
+                    "lat": marker.lat or 0.0,
+                    "lng": marker.lon or 0.0,
+                    "content": f"Veracity Score: {marker.veracity_score:.2f} | Source: {marker.source_name}",
+                    "iconid": self._get_icon_id(marker.veracity_score),
+                    "linked_post": 0,
+                    "tags": ",".join(marker.fallacy_types) if marker.fallacy_types else ""
+                }).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Basic {self._get_auth_header()}"
+                },
+                method="POST"
+            )
+            
+            with urllib.request.urlopen(req, timeout=30) as response:
+                result = json.loads(response.read().decode())
+                print(f"[MapPress] Marker posted: {result.get('id', 'unknown')}", file=sys.stderr)
+                return result
+                
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode() if e.fp else ""
+            print(f"MapPress HTTP error {e.code}: {error_body[:200]}", file=sys.stderr)
+            
+            # Fallback: Try generic WordPress post with custom fields
+            return self._post_as_wp_post(marker)
+            
+        except Exception as e:
+            print(f"MapPress POST error: {e}", file=sys.stderr)
+            return {"error": str(e)}
+    
+    def _post_as_wp_post(self, marker: PublicationMarker) -> Dict:
+        """
+        Fallback: Post as WordPress post with MapPress metadata.
+        
+        Used when MapPress REST API is not available.
+        """
+        url = f"{self.site_url}/wp-json/wp/v2/posts"
+        
+        custom_meta = {
+            "_mappress_veracity_score": str(marker.veracity_score),
+            "_mappress_color": marker.color,
+            "_mappress_lat": str(marker.lat or 0),
+            "_mappress_lng": str(marker.lon or 0),
+            "_mappress_fallacy_types": ",".join(marker.fallacy_types),
+            "_mappress_source": marker.source_name,
+            "_mappress_gdel_hash": marker.id,
+        }
+        
+        payload = {
+            "title": marker.headline[:200],
+            "content": f"<!-- MapPress --><!-- MapID: {self.MAP_ID} -->\nVeracity: {marker.veracity_score:.2f} | Source: {marker.source_name}",
+            "status": "publish",
+            "categories": [self.MAP_ID],
+            "meta": custom_meta
+        }
+        
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Basic {self._get_auth_header()}"
+                },
+                method="POST"
+            )
+            
+            with urllib.request.urlopen(req, timeout=30) as response:
+                result = json.loads(response.read().decode())
+                print(f"[MapPress-Fallback] Post created: {result.get('id', 'unknown')}", file=sys.stderr)
+                return result
+                
+        except Exception as e:
+            print(f"MapPress fallback error: {e}", file=sys.stderr)
+            return {"error": str(e)}
+    
+    def sync_markers(self, markers: List[PublicationMarker]) -> int:
+        """Sync multiple markers to MapPress Map ID 2."""
+        self._markers_cache = markers
+        count = 0
+        
+        for marker in markers:
+            result = self.post_marker(marker)
+            if "id" in result or "post_id" in result:
+                # Archive to Shadow Ledger
+                self._archive_to_shadow(marker, result.get("id", result.get("post_id", "unknown")))
+                count += 1
+            time.sleep(0.5)  # Rate limit
+        
+        return count
+    
+    def _archive_to_shadow(self, marker: PublicationMarker, wp_id: Any) -> str:
+        """Archive marker to Shadow Ledger for forensic record."""
+        import os
+        os.makedirs(self._archive_dir, exist_ok=True)
+        
+        archive_entry = {
+            "gdelt_hash": marker.id,
+            "wp_id": wp_id,
+            "headline": marker.headline,
+            "source_url": marker.source_url,
+            "source_name": marker.source_name,
+            "lat": marker.lat,
+            "lon": marker.lon,
+            "veracity_score": marker.veracity_score,
+            "fallacy_types": marker.fallacy_types,
+            "color": marker.color,
+            "icon_id": self._get_icon_id(marker.veracity_score),
+            "map_id": self.MAP_ID,
+            "archived_at": datetime.now().isoformat()
+        }
+        
+        filename = f"{self._archive_dir}/{marker.id}.json"
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(archive_entry, f, indent=2)
+        
+        print(f"[Shadow Archive] {filename}", file=sys.stderr)
+        return filename
+    
+    def export_manifest(self, filepath: str = "data/manifest.json") -> str:
+        """Export markers as JSON manifest for frontend MapPress sync."""
+        manifest = {
+            "generated_at": datetime.now().isoformat(),
+            "map_id": self.MAP_ID,
+            "count": len(self._markers_cache),
+            "markers": [m.to_dict() for m in self._markers_cache],
+            "manifold_jumps": [m.to_manifold_jump() for m in self._markers_cache]
+        }
+        
+        import os
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2)
+        
+        return filepath
 
 
 class WordPressBridge:
