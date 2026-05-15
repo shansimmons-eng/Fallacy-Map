@@ -23,6 +23,7 @@ import hashlib
 import urllib.request
 import urllib.parse
 import urllib.error
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, asdict, field
@@ -30,6 +31,23 @@ from datetime import datetime
 from enum import Enum
 
 FEEDPARSER_AVAILABLE = False
+
+def load_env_file(env_path: str = ".env") -> None:
+    """Load environment variables from .env file if it exists."""
+    path = Path(env_path)
+    if not path.exists():
+        return
+    with open(path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            line = line.lstrip('export ').strip()
+            key, value = line.split('=', 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key not in os.environ:
+                os.environ[key] = value
 
 # Logic Constants: The Inverion Thresholds
 VERACITY_CONSTANT = 1.0
@@ -859,6 +877,7 @@ class InverionBridge:
 
 def main():
     """Main entry point."""
+    load_env_file()  # Load .env if present
     import argparse
     
     parser = argparse.ArgumentParser(description="Inverion Semantic Bridge")
