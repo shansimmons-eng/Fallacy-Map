@@ -160,50 +160,476 @@ class SemanticScrubber:
     """
     Simulated LLM-Bridge / Regex Scrubber.
     
-    In production, this wraps the local analyzer (engine/auditor/semantic_bridge/).
-    For now, it provides pattern-based detection for testing.
+    Patterns based on Wikipedia's List of Fallacies + real examples from:
+    - https://en.wikipedia.org/wiki/List_of_fallacies
+    - https://github.com/tmakesense/logical-fallacy (400+ labeled examples)
+    
+    Each pattern maps a regex to a fallacy type with magnitude and persistence scores.
     """
     
     FALLACY_PATTERNS = [
-        {"pattern": r"\b(you|your)\s+(should|must|have to)\b.*\b(believe me|I am right|trust me)\b", 
-         "type": "appeal_to_authority", "magnitude": 0.6, "persistence": 0.6},
-        {"pattern": r"\b(either|only|just)\s+(we|you|i|they)\s+(do|have|are)\b.*\bor\b", 
-         "type": "false_dilemma", "magnitude": 0.8, "persistence": 0.7},
-        {"pattern": r"\bif\s+.*\bthen\s+.*\bwill\s+(also|too|as well)\b", 
-         "type": "slippery_slope", "magnitude": 0.7, "persistence": 0.6},
-        {"pattern": r"\b(obviously|certainly|clearly|everyone knows)\b.*\b(so|therefore|thus)\b", 
-         "type": "begging_the_question", "magnitude": 0.7, "persistence": 0.6},
-        {"pattern": r"\bdoesn't\s+(actually|really|truly)\b", 
-         "type": "strawman", "magnitude": 0.6, "persistence": 0.5},
+        # ===== FAULTY GENERALIZATION / HASTY GENERALIZATION =====
+        # Based on real examples: "All women are bad drivers", "All Germans are thieves", etc.
+        {"pattern": r"\ball\s+(women|men|people|children|teenagers|students|teachers|parents)\s+(are|is)\b", 
+         "type": "hasty_generalization", "magnitude": 0.7, "persistence": 0.65},
+        {"pattern": r"\b(every|all|everyone|no one|nobody)\s+(does|is|are|were|said|knows?)\b", 
+         "type": "hasty_generalization", "magnitude": 0.65, "persistence": 0.6},
+        {"pattern": r"\b(all|every|any)\s+\w+\s+(are|is|does|can)\b", 
+         "type": "hasty_generalization", "magnitude": 0.6, "persistence": 0.55},
+        {"pattern": r"\bI\s+(met|saw|know|experienced?|talked\s+to)\s+(one|two|a\s+few|some)\b.*\b(now\s+I\s+believe|so\s+|therefore)\b",
+         "type": "hasty_generalization", "magnitude": 0.65, "persistence": 0.6},
+        {"pattern": r"\b(since|because)\s+.*\b(all|every)\b.*\btherefore\b", 
+         "type": "hasty_generalization", "magnitude": 0.7, "persistence": 0.65},
+        {"pattern": r"\bcan'?t?\s+(trust|believe|accept)\s+.*\s+(all|because\s+all|since\s+all)\b",
+         "type": "hasty_generalization", "magnitude": 0.6, "persistence": 0.55},
+        
+        # ===== FALSE CAUSALITY / POST HOC =====
+        # Based on real examples: "Every time I go to sleep the sun goes down", "I ate Oreos and got sick"
+        {"pattern": r"\b(every\s+time|every\s+time\s+I)\b.*\b(then|therefore|so\s+)\b.*\b(causes?|led\s+to|resulted\s+in)\b",
+         "type": "post_hoc", "magnitude": 0.7, "persistence": 0.65},
+        {"pattern": r"\b(I\s+ate|after\s+I\s+)\b.*\b(then\s+I\s+was|next\s+day|after\s+that)\b.*\b(sick|ill|got\s+hurt|broke)\b",
+         "type": "post_hoc", "magnitude": 0.65, "persistence": 0.6},
+        {"pattern": r"\b(since|because|after)\s+.*\b(caused?|led\s+to|resulted\s+in|brought\s+about)\b",
+         "type": "false_cause", "magnitude": 0.6, "persistence": 0.55},
+        {"pattern": r"\b(correlation|linked|connected|related)\s+(to|with)\b.*\b(therefore|so|proves?|means)\b",
+         "type": "false_cause", "magnitude": 0.55, "persistence": 0.5},
+        {"pattern": r"\b(the\s+rooster|every\s+time)\b.*\b(causes?|before)\b",
+         "type": "post_hoc", "magnitude": 0.75, "persistence": 0.7},
+        
+        # ===== CIRCULAR REASONING =====
+        # Based on real examples: "God exists because Bible says so", "We know he's not lying since he says he's telling truth"
+        {"pattern": r"\bbecause\s+(the\s+)?Bible\s+says\s+so\b", "type": "circular_reasoning", "magnitude": 0.85, "persistence": 0.8},
+        {"pattern": r"\b(because|since)\s+it\s+(says?|tells?|states?)\s+(so|it's\s+true|the\s+truth)\b",
+         "type": "circular_reasoning", "magnitude": 0.75, "persistence": 0.7},
+        {"pattern": r"\bwe\s+know\s+(he|she|they)\s+(is|are)\s+(not\s+)?lying\s+because\s+(he|she|they)\s+says?\s+(so|truth)\b",
+         "type": "circular_reasoning", "magnitude": 0.8, "persistence": 0.75},
+        {"pattern": r"\b(it'?s?\s+true\s+)?because\s+it'?s?\s+(true|real|right)\b", "type": "circular_reasoning", "magnitude": 0.8, "persistence": 0.75},
+        {"pattern": r"\byou\s+must\s+obey\s+the\s+law\s+because\s+(it'?s?\s+)?illegal\s+to\s+break\s+it\b",
+         "type": "circular_reasoning", "magnitude": 0.75, "persistence": 0.7},
+        {"pattern": r"\b(better|best|greatest)\s+than\s+(any|other|all)\b.*\b(because|since)\b",
+         "type": "circular_reasoning", "magnitude": 0.65, "persistence": 0.6},
+        {"pattern": r"\b(you should|you need to)\s+accept\s+because\s+(it'?s?\s+)?obvious\b",
+         "type": "begging_the_question", "magnitude": 0.7, "persistence": 0.65},
+        
+        # ===== AD POPULUM / APPEAL TO POPULARITY =====
+        # Based on real examples: "Everyone is doing it", "95% of teachers do", "McDonald's 99 billion served"
+        {"pattern": r"\b(everyone|everybody|all\s+the\s+(cool|kids|people))\s+(does|is|are|doing|said|wants)\s+(it|so|this|them)\b",
+         "type": "bandwagon", "magnitude": 0.55, "persistence": 0.5},
+        {"pattern": r"\b(you\s+should\s+too|so\s+should\s+you|be\s+part\s+of)\b.*\b(everyone|majority|millions|crowd)\b",
+         "type": "bandwagon", "magnitude": 0.5, "persistence": 0.45},
+        {"pattern": r"\b\d+%\s+(of\s+)?(all\s+)?(people|everyone|surveyed|teachers?|doctors?)\b.*\b(so|therefore|must)\b",
+         "type": "bandwagon", "magnitude": 0.5, "persistence": 0.45},
+        {"pattern": r"\b(over\s+)?\d+\s+(billion|million|thousand)\s+(served|sold|used)\b",
+         "type": "bandwagon", "magnitude": 0.4, "persistence": 0.35},
+        {"pattern": r"\b(everyone\s+should|everyone\s+wants?|everyone\s+loves?)\b", "type": "bandwagon", "magnitude": 0.45, "persistence": 0.4},
+        
+        # ===== AD HOMINEM =====
+        # Based on real examples: "Look at that face", "He's just a dumb actor", "How can you trust someone who wears bow ties"
+        {"pattern": r"\b(just|a\s+dumb?|an?\s+(idiot|stupid|dumb))\b.*\b(actor|doctor|lawyer|expert)\b.*\b(what\s+(does|can)|so\s+)", 
+         "type": "ad_hominem", "magnitude": 0.7, "persistence": 0.65},
+        {"pattern": r"\blook\s+at\s+(that\s+)?(face|person|man|woman)\b.*\b(vote|trust|believe|support)\b",
+         "type": "ad_hominem", "magnitude": 0.75, "persistence": 0.7},
+        {"pattern": r"\b(how\s+(can|could)\s+you\s+(trust|believe|listen\s+to))\b.*\b(who|that|someone)\b.*\b(wears?|doesn)", 
+         "type": "ad_hominem", "magnitude": 0.65, "persistence": 0.6},
+        {"pattern": r"\b(you|he|she|they)\s+(never\s+)?(finished|graduated|went\s+to)\b.*\b(so\s+why|therefore)\b.*\b(trust|believe|listen)\b",
+         "type": "ad_hominem", "magnitude": 0.65, "persistence": 0.6},
+        {"pattern": r"\b(Don'?t?|Don'?t\s+listen\s+to)\b.*\b(because\s+(he|she|they)|how\s+can\s+)\b",
+         "type": "ad_hominem", "magnitude": 0.6, "persistence": 0.55},
+        {"pattern": r"\b(stupid|dumb|idiot|liar|criminal|corrupt)\b.*\b(so\s+why|therefore|can'?t?)\b",
+         "type": "ad_hominem", "magnitude": 0.7, "persistence": 0.65},
+        
+        # ===== APPEAL TO EMOTION =====
+        # Based on real examples: "Don't you want the best for your baby", "Grandma worked so hard on it"
+        {"pattern": r"\b(don'?t\s+you\s+want|want\s+the\s+best\s+for)\b.*\b(baby|child|kids?|family|loved\s+one)\b",
+         "type": "appeal_to_emotion", "magnitude": 0.6, "persistence": 0.55},
+        {"pattern": r"\b(grandma|grandfather|mother|father|parent)\s+(worked\s+so\s+hard|made|tried)\b.*\b(it|this|the)\b",
+         "type": "appeal_to_pity", "magnitude": 0.55, "persistence": 0.5},
+        {"pattern": r"\b(if\s+we\s+don'?t?\s+|unless\s+)\b.*\b(could\s+put\s+down|will\s+(die|suffer|get\s+hurt|be\s+harmed))\b",
+         "type": "appeal_to_fear", "magnitude": 0.65, "persistence": 0.6},
+        {"pattern": r"\b(do\s+you\s+want\s+to\s+be\s+responsible|You\s+can'?t?\s+let\s+this\s+happen)\b",
+         "type": "appeal_to_fear", "magnitude": 0.6, "persistence": 0.55},
+        {"pattern": r"\b(we\s+the\s+people|justice|unity|integrity)\b.*\b(work\s+together|fight\s+for|protect)\b",
+         "type": "appeal_to_emotion", "magnitude": 0.5, "persistence": 0.45},
+        
+        # ===== FALSE DICHOTOMY / FALSE DILEMMA =====
+        # Based on real examples: "Either you're with us or against us"
+        {"pattern": r"\b(either\s+you('?re| are)|either\s+we('?re| are)|either\s+)\b.*\b(or\s+you('?re| are)|or\s+we('?re| are)|or\s+)\b",
+         "type": "false_dilemma", "magnitude": 0.7, "persistence": 0.65},
+        {"pattern": r"\b(only\s+two|just\s+two|one\s+or\s+the\s+other)\b.*\b(possible|options|choices|alternatives)\b",
+         "type": "false_dilemma", "magnitude": 0.65, "persistence": 0.6},
+        {"pattern": r"\byou('?re| are)\s+(either\s+)?(with\s+us|against\s+us|for\s+us)\b",
+         "type": "false_dilemma", "magnitude": 0.7, "persistence": 0.65},
+        
+        # ===== SLIPPERY SLOPE =====
+        # Based on real examples: "If I don't take AP class...I'll live in parents' basement forever"
+        {"pattern": r"\bif\s+(we\s+don'?t?|I\s+don'?t?|you\s+don'?t?)\b.*\bthen\s+(eventually|soon|next\s+thing)\b",
+         "type": "slippery_slope", "magnitude": 0.7, "persistence": 0.65},
+        {"pattern": r"\b(if\s+.*\s+then\s+.*\s+then\s+.*\s+then\s+.*\s+then\s+.*)\b", "type": "slippery_slope", "magnitude": 0.75, "persistence": 0.7},
+        {"pattern": r"\b(the\s+next\s+thing\s+(we\s+know|you\s+know)|the\s+next\s+thing\s+we\s+know)\b",
+         "type": "slippery_slope", "magnitude": 0.6, "persistence": 0.55},
+        {"pattern": r"\b(can'?t?\s+freeze|won'?t?\s+stop|cannot\s+allow)\b.*\b(next\s+(thing|step)|soon|eventually)\b",
+         "type": "slippery_slope", "magnitude": 0.65, "persistence": 0.6},
+        
+        # ===== FALSE AUTHORITY =====
+        # Based on real examples: "Leonardo DiCaprio is just a dumb actor...what does he really know"
+        {"pattern": r"\b(he'?s?\s+just|a\s+)?(dumb|stupid|just\s+an?)\s+(actor|actress|celebrity|celeb)\b.*\b(what\s+(does|can)|knows?\s+nothing)\b",
+         "type": "false_authority", "magnitude": 0.65, "persistence": 0.6},
+        {"pattern": r"\b(according\s+to|as\s+(one|a)\s+)\b.*\b(says|told|believes?)\s+(so|it'?s?\s+true)\b",
+         "type": "false_authority", "magnitude": 0.5, "persistence": 0.45},
+        {"pattern": r"\b(a\s+)?(famous|well-known|renowned|celebrity)\s+(expert|authority|scientist|actress|actor)\b",
+         "type": "false_authority", "magnitude": 0.5, "persistence": 0.45},
+        
+        # ===== STRAWMAN =====
+        # Based on: misrepresenting someone's position
+        {"pattern": r"\b(says?|claims?|thinks?)\s+(that\s+)?(all|every|everyone|nobody)\b.*\b(so\s+(he|she|they)|therefore|which\s+means)\b",
+         "type": "strawman", "magnitude": 0.6, "persistence": 0.55},
+        {"pattern": r"\bdoesn't\s+(actually|really|truly)\s+(believe|think|mean)\b",
+         "type": "strawman", "magnitude": 0.55, "persistence": 0.5},
+        
+        # ===== BEGGING THE QUESTION =====
+        {"pattern": r"\b(obviously|certainly|clearly|everyone\s+knows)\b.*\b(so|therefore|thus)\b",
+         "type": "begging_the_question", "magnitude": 0.7, "persistence": 0.65},
+        {"pattern": r"\bit'?s?\s+(obvious|clear|certain|evident)\s+because\s+(it)?'?s?\s+(true|real|obvious)\b",
+         "type": "begging_the_question", "magnitude": 0.7, "persistence": 0.65},
+        
+        # ===== RED HERRING =====
+        {"pattern": r"\byes\s+but\s+what\s+about\b", "type": "red_herring", "magnitude": 0.55, "persistence": 0.5},
+        {"pattern": r"\b(nevermind|anyway|side\s+note|by\s+the\s+way)\b.*\b(let'?s?\s+look|consider|focus)\b",
+         "type": "red_herring", "magnitude": 0.5, "persistence": 0.45},
+        
+        # ===== FALSE ANALOGY =====
+        # Based on: "The mind is like a knife"
+        {"pattern": r"\b(is\s+like|a\s+lot\s+like|similar\s+to|just\s+like)\b.*\b(can\s+should|must|will|would)\b",
+         "type": "false_analogy", "magnitude": 0.55, "persistence": 0.5},
+        {"pattern": r"\bif\s+.*\s+(works?|helps?|functions?)\s+(for|in|with)\b.*\bthen\s+.*\s+(can|must|should)\s+(for|in|with)\b",
+         "type": "false_analogy", "magnitude": 0.55, "persistence": 0.5},
+        
+        # ===== COMPOSITION / DIVISION =====
+        {"pattern": r"\b(all|every|each)\s+(part|member|piece)\b.*\b(therefore|so|thus)\b.*\b(whole|entire|all)\b",
+         "type": "composition_division", "magnitude": 0.55, "persistence": 0.5},
+        {"pattern": r"\b(the\s+whole|entire)\b.*\b(must|will|should)\b.*\b(every|all|each)\b",
+         "type": "composition_division", "magnitude": 0.55, "persistence": 0.5},
+        
+        # ===== AFFIRMING THE CONSEQUENT =====
+        {"pattern": r"\bif\s+(.+)\s+then\s+(.+)\b.*\b\2\b.*\btherefore|\1\b", "type": "affirming_consequent", "magnitude": 0.7, "persistence": 0.65},
+        
+        # ===== DENYING THE ANTECEDENT =====
+        {"pattern": r"\b(not\s+A|because\s+not\s+A)\b.*\b(therefore|so)\b.*\b(not\s+B|then\s+not\s+B)\b",
+         "type": "denying_antecedent", "magnitude": 0.65, "persistence": 0.6},
+        
+        # ===== NON-SEQUITUR =====
+        {"pattern": r"\b(all\s+men\s+are\s+mortal.*Socrates\s+is\s+a\s+man)\b", "type": "non_sequitur", "magnitude": 0.7, "persistence": 0.65},
+        {"pattern": r"\b(we\s+should\s+stop\s+using|ban)\b.*\b(because\s+it\s+is\s+snowing|so\s+)\b",
+         "type": "non_sequitur", "magnitude": 0.75, "persistence": 0.7},
+        
+        # ===== GAMBLER'S FALLACY =====
+        {"pattern": r"\b(due|overdue|has\s+to\s+hit|has\s+to\s+come|it's\s+time\s+for)\b",
+         "type": "gamblers_fallacy", "magnitude": 0.55, "persistence": 0.5},
+        
+        # ===== SUNK COST =====
+        {"pattern": r"\b(we'?ve?|I'?ve?|they'?ve?)\s+(already|spent|invested)\b.*\b(might\s+as\s+well|should|have\s+to)\b",
+         "type": "sunk_cost_fallacy", "magnitude": 0.6, "persistence": 0.55},
+        
+        # ===== NOVELTY / TRADITION =====
+        {"pattern": r"\b(newest?|latest|cutting-edge|modern)\s+(so\s+)?(it's\s+)?(better|superior|improved)\b",
+         "type": "appeal_to_novelty", "magnitude": 0.5, "persistence": 0.45},
+        {"pattern": r"\b(we'?ve?\s+always|traditionally|historically)\s+(done?|been|said)\b",
+         "type": "appeal_to_tradition", "magnitude": 0.5, "persistence": 0.45},
+        
+        # ===== MIDDLE GROUND =====
+        {"pattern": r"\b(balance|compromise|middle\s+ground|halfway)\s+(is\s+)?(always\s+)?(best|correct|right)\b",
+         "type": "middle_ground", "magnitude": 0.45, "persistence": 0.4},
+        
+        # ===== SPECIAL PLEADING =====
+        {"pattern": r"\b(this\s+is\s+an?\s+)?exception\b.*\b(deserves?|justifies?|warrants?)\b",
+         "type": "special_pleading", "magnitude": 0.55, "persistence": 0.5},
+        
+        # ===== APPEAL TO NATURE =====
+        {"pattern": r"\b(natural|organic|all-natural)\s+(is\s+)?(better|good|healthy|safer)\b",
+         "type": "appeal_to_nature", "magnitude": 0.5, "persistence": 0.45},
+        
+        # ===== LOADED QUESTION =====
+        {"pattern": r"\b(have\s+you\s+stopped|have\s+you\s+been|are\s+you\s+still)\b.*\b(cheating|lying|cutting|doing)\b",
+         "type": "loaded_question", "magnitude": 0.7, "persistence": 0.65},
+        
+        # ===== TU QUOQUE =====
+        {"pattern": r"\b(you|they|he|she)\s+(do|does|is|are)\s+(it|so|same|too)\b.*\b(so|therefore|which\s+proves)\b",
+         "type": "tu_quoque", "magnitude": 0.55, "persistence": 0.5},
+        {"pattern": r"\bwhat\s+about\s+(your|their|his|her)\s+(own|corruption|failure)\b",
+         "type": "tu_quoque", "magnitude": 0.5, "persistence": 0.45},
+        
+        # ===== IGNORATIO ELENCHI =====
+        {"pattern": r"\b(what\s+this\s+means?\s+is|basically|the\s+point\s+is)\b",
+         "type": "ignoratio_elenchi", "magnitude": 0.5, "persistence": 0.45},
+        
+        # ===== THOUGHT-TERMINATING CLICHÉ =====
+        {"pattern": r"\b(at\s+the\s+end\s+of\s+the\s+day|it\s+is\s+what\s+it\s+is|time\s+will\s+tell)\b",
+         "type": "thought_terminating_cliche", "magnitude": 0.35, "persistence": 0.3},
+        
+        # ===== PROSECUTOR'S FALLACY =====
+        {"pattern": r"\b(one\s+in\s+a\s+million|low\s+probability|rare\s+chance)\b.*\b(must\s+be|therefore|so\s+it\s+is)\b",
+         "type": "prosecutors_fallacy", "magnitude": 0.55, "persistence": 0.5},
+        
+        # ===== MOVING THE GOALPOSTS =====
+        {"pattern": r"\b(that'?s?\s+not\s+enough|you\s+need\s+more|this\s+doesn'?t?\s+count)\b.*\b(prove|demonstrate|show)\b",
+         "type": "moving_goalposts", "magnitude": 0.65, "persistence": 0.6},
+        
+        # ===== EQUIVOCATION =====
+        {"pattern": r"\b(depends?\s+on\s+(how\s+)?what\s+(you\s+)?mean\s+by|your\s+definition\s+of)\b",
+         "type": "equivocation", "magnitude": 0.5, "persistence": 0.45},
+        
+        # ===== GENETIC FALLACY =====
+        {"pattern": r"\b(comes?\s+from|stems?\s+from|originated?|traced?\s+to)\b.*\b(bad|flawed|biased|discredited)\b",
+         "type": "genetic_fallacy", "magnitude": 0.5, "persistence": 0.45},
+        
+        # ===== APPEAL TO SILENCE =====
+        {"pattern": r"\b(no\s+evidence|absence\s+of\s+proof|nobody\s+has\s+shown|there'?s?\s+no\s+proof)\b.*\b(true|real|actual)\b",
+         "type": "appeal_to_silence", "magnitude": 0.5, "persistence": 0.45},
     ]
+    
+    FALLACY_TEMPLATES = [
+        # "All X are Y" - Hasty Generalization
+        {"template": r"\ball\s+\w+\s+are\s+\w+", "type": "hasty_generalization", "magnitude": 0.7, "persistence": 0.65},
+        {"template": r"\ball\s+\w+\s+is\s+\w+", "type": "hasty_generalization", "magnitude": 0.7, "persistence": 0.65},
+        # "Everyone X" / "Nobody X" - Universal Quantifier
+        {"template": r"\beveryone\s+\w+", "type": "hasty_generalization", "magnitude": 0.65, "persistence": 0.6},
+        {"template": r"\bnobody\s+\w+", "type": "hasty_generalization", "magnitude": 0.65, "persistence": 0.6},
+        # "Either X or Y" - False Dilemma
+        {"template": r"\beither\s+\w+\s+or\s+\w+", "type": "false_dilemma", "magnitude": 0.7, "persistence": 0.65},
+        # "If X then Y" chains - Slippery Slope
+        {"template": r"\bif\s+\w+.*\bthen\s+\w+.*\b(if|then|eventually|soon)\b", "type": "slippery_slope", "magnitude": 0.75, "persistence": 0.7},
+        # "I met one X who Y, so all X are Y" - Anecdotal Generalization
+        {"template": r"\bi\s+met\s+\w+\s+who\s+.*\bso\s+all\s+\w+\s+are\s+\w+", "type": "hasty_generalization", "magnitude": 0.75, "persistence": 0.7},
+        # "X because Y because X" - Circular
+        {"template": r"\b\w+\s+because\s+.*\s+because\s+", "type": "circular_reasoning", "magnitude": 0.8, "persistence": 0.75},
+        # "Everyone knows X so Y" - Begging the Question
+        {"template": r"\beveryone\s+(knows?|believes?|agrees?)\s+", "type": "begging_the_question", "magnitude": 0.6, "persistence": 0.55},
+        # "You shouldn't X because Y" where Y is same as X - Tu Quoque
+        {"template": r"\byou\s+(shouldn'?t?|can'?t?|don'?t?)\s+\w+\s+because\s+", "type": "tu_quoque", "magnitude": 0.6, "persistence": 0.55},
+    ]
+    
+    NGRAM_WEIGHTS = {
+        ("all", "are"): 0.8, ("all", "is"): 0.8,
+        ("if", "then"): 0.7, ("either", "or"): 0.75,
+        ("because", "therefore"): 0.85, ("since", "therefore"): 0.8,
+        ("every", "time"): 0.7, ("after", "therefore"): 0.75,
+        ("everyone", "should"): 0.65, ("nobody", "should"): 0.65,
+        ("you", "should"): 0.5, ("I", "believe"): 0.45,
+        ("it", "is", "true"): 0.6, ("obviously", "therefore"): 0.7,
+        ("clearly", "therefore"): 0.7, ("therefore", "all"): 0.75,
+        ("then", "eventually"): 0.6, ("next", "thing"): 0.55,
+    }
+    
+    QUANTIFIER_COMBOS = [
+        (r"\b(all|every|everyone|nobody)\b", r"\b(should|must|are|is|will)\b", "hasty_generalization", 0.75),
+        (r"\b(always|never)\b", r"\b(because|therefore|so)\b", "hasty_generalization", 0.7),
+        (r"\b(all|every)\b", r"\b(cannot|can'?t)\b", "hasty_generalization", 0.7),
+    ]
+    
+    SENTIMENT_EXTREMITY_WEIGHTS = {
+        "fear": 0.7, "afraid": 0.7, "terrible": 0.8, "horrible": 0.8,
+        "destroy": 0.85, "kill": 0.85, "die": 0.8, "dead": 0.75,
+        "love": 0.5, "best": 0.5, "great": 0.5, "wonderful": 0.6,
+        "hope": 0.4, "dream": 0.4, "peace": 0.3, "justice": 0.4,
+    }
+    
+    DISCOURSE_MARKERS = {
+        "but": 0.2, "however": 0.3, "although": 0.25, "yet": 0.2,
+        "on the other hand": 0.35, "that said": 0.3, "still": 0.15,
+    }
     
     def __init__(self):
         self._temporal_index = 0
+    
+    def _check_templates(self, text: str) -> List[FallacyTelemetry]:
+        """Check text against sentence templates."""
+        import re
+        fallacies = []
+        text_lower = text.lower()
         
+        for tmpl in self.FALLACY_TEMPLATES:
+            if re.search(tmpl["template"], text_lower):
+                fallacies.append(FallacyTelemetry(
+                    type=tmpl["type"],
+                    magnitude=tmpl["magnitude"],
+                    persistence=tmpl["persistence"],
+                    coord=[self._temporal_index * 2.0, tmpl["magnitude"] * 2.0, -tmpl["magnitude"] * 3.0],
+                    depth=1
+                ))
+                self._temporal_index += 1
+        
+        return fallacies
+    
+    def _check_ngrams(self, text: str) -> List[FallacyTelemetry]:
+        """Check for high-weight ngram sequences."""
+        import re
+        fallacies = []
+        text_lower = text.lower()
+        words = re.findall(r'\b\w+\b', text_lower)
+        
+        for i in range(len(words) - 1):
+            bigram = (words[i], words[i + 1])
+            if bigram in self.NGRAM_WEIGHTS:
+                weight = self.NGRAM_WEIGHTS[bigram]
+                fallacies.append(FallacyTelemetry(
+                    type=self._infer_fallacy_type(bigram),
+                    magnitude=weight,
+                    persistence=weight * 0.9,
+                    coord=[self._temporal_index * 2.0, weight * 2.0, -weight * 3.0],
+                    depth=2
+                ))
+                self._temporal_index += 1
+        
+        for i in range(len(words) - 2):
+            trigram = (words[i], words[i + 1], words[i + 2])
+            trigram_str = " ".join(trigram)
+            for key_ngram, weight in self.NGRAM_WEIGHTS.items():
+                if isinstance(key_ngram, tuple) and len(key_ngram) == 2:
+                    bigram_str = " ".join(key_ngram)
+                    if bigram_str in trigram_str:
+                        fallacies.append(FallacyTelemetry(
+                            type="causal_chain",
+                            magnitude=weight * 1.1,
+                            persistence=weight,
+                            coord=[self._temporal_index * 2.0, weight * 2.0, -weight * 3.0],
+                            depth=2
+                        ))
+                        self._temporal_index += 1
+                        break
+        
+        return fallacies
+    
+    def _check_quantifier_combos(self, text: str) -> List[FallacyTelemetry]:
+        """Check for dangerous quantifier + modal combinations."""
+        import re
+        fallacies = []
+        text_lower = text.lower()
+        
+        for quant_pat, modal_pat, fallacy_type, weight in self.QUANTIFIER_COMBOS:
+            quant_match = re.search(quant_pat, text_lower)
+            modal_match = re.search(modal_pat, text_lower)
+            if quant_match and modal_match:
+                if modal_match.start() > quant_match.start():
+                    fallacies.append(FallacyTelemetry(
+                        type=fallacy_type,
+                        magnitude=weight,
+                        persistence=weight * 0.9,
+                        coord=[self._temporal_index * 2.0, weight * 2.0, -weight * 3.0],
+                        depth=3
+                    ))
+                    self._temporal_index += 1
+        
+        return fallacies
+    
+    def _check_sentiment_extremity(self, text: str) -> List[FallacyTelemetry]:
+        """Check for extreme sentiment combined with universal quantifiers."""
+        import re
+        fallacies = []
+        text_lower = text.lower()
+        
+        has_extreme_sentiment = any(re.search(pat, text_lower) for pat in self.SENTIMENT_EXTREMITY_WEIGHTS.keys())
+        has_quantifier = re.search(r"\b(all|every|everyone|nobody|always|never)\b", text_lower)
+        
+        if has_extreme_sentiment and has_quantifier:
+            if isinstance(has_extreme_sentiment, bool):
+                avg_sentiment = 0.6
+            else:
+                match_val = has_extreme_sentiment.group() if hasattr(has_extreme_sentiment, 'group') else list(self.SENTIMENT_EXTREMITY_WEIGHTS.keys())[0]
+                avg_sentiment = self.SENTIMENT_EXTREMITY_WEIGHTS.get(match_val, 0.6)
+            
+            fallacies.append(FallacyTelemetry(
+                type="appeal_to_emotion",
+                magnitude=avg_sentiment,
+                persistence=avg_sentiment * 0.9,
+                coord=[self._temporal_index * 2.0, avg_sentiment * 2.0, -avg_sentiment * 3.0],
+                depth=4
+            ))
+            self._temporal_index += 1
+        
+        return fallacies
+    
+    def _check_discourse_markers(self, text: str) -> List[FallacyTelemetry]:
+        """Check for discourse markers indicating deflection."""
+        import re
+        fallacies = []
+        text_lower = text.lower()
+        
+        for marker, weight in self.DISCOURSE_MARKERS.items():
+            if marker in text_lower:
+                pos = text_lower.index(marker)
+                context_start = max(0, pos - 30)
+                context = text_lower[context_start:pos + len(marker)]
+                if re.search(r"\bbut\s+\w+\s+\w+\s+(should|must|need)\b", context) or \
+                   re.search(r"\bhowever\s+.*\b(you|they|we)\b", context):
+                    fallacies.append(FallacyTelemetry(
+                        type="red_herring",
+                        magnitude=weight,
+                        persistence=weight * 0.9,
+                        coord=[self._temporal_index * 2.0, weight * 2.0, -weight * 3.0],
+                        depth=5
+                    ))
+                    self._temporal_index += 1
+                    break
+        
+        return fallacies
+    
+    def _infer_fallacy_type(self, bigram: tuple) -> str:
+        """Infer fallacy type from bigram context."""
+        first, second = bigram
+        if first in ("all", "every", "everyone", "nobody"):
+            return "hasty_generalization"
+        elif first in ("if", "when") and second == "then":
+            return "conditional_reasoning"
+        elif first == "because" or second == "therefore":
+            return "causal_fallacy"
+        elif first == "either" and second == "or":
+            return "false_dilemma"
+        else:
+            return "general_fallacy"
+    
     def analyze(self, raw_input: str) -> List[FallacyTelemetry]:
-        """Analyze raw text and return fallacy telemetry."""
+        """Analyze raw text and return fallacy telemetry using multiple detection layers."""
         import re
         
         fallacies = []
         input_lower = raw_input.lower()
         
+        pattern_fallacies = self._check_patterns(input_lower)
+        fallacies.extend(pattern_fallacies)
+        
+        template_fallacies = self._check_templates(raw_input)
+        fallacies.extend(template_fallacies)
+        
+        ngram_fallacies = self._check_ngrams(raw_input)
+        fallacies.extend(ngram_fallacies)
+        
+        quant_fallacies = self._check_quantifier_combos(raw_input)
+        fallacies.extend(quant_fallacies)
+        
+        sentiment_fallacies = self._check_sentiment_extremity(raw_input)
+        fallacies.extend(sentiment_fallacies)
+        
+        discourse_fallacies = self._check_discourse_markers(raw_input)
+        fallacies.extend(discourse_fallacies)
+        
+        return fallacies
+    
+    def _check_patterns(self, text: str) -> List[FallacyTelemetry]:
+        """Original regex pattern matching."""
+        import re
+        fallacies = []
+        
         for fp in self.FALLACY_PATTERNS:
-            if re.search(fp["pattern"], input_lower, re.IGNORECASE):
-                # Calculate spatial position based on temporal index
-                x = self._temporal_index * 2.0  # X = temporal flow
-                y = fp["magnitude"] * 2.0       # Y = relationship density  
-                z = -fp["magnitude"] * 3.0       # Z = gravity depth (negative = well)
-                
+            if re.search(fp["pattern"], text, re.IGNORECASE):
                 fallacies.append(FallacyTelemetry(
                     type=fp["type"],
                     magnitude=fp["magnitude"],
                     persistence=fp["persistence"],
-                    coord=[x, y, z],
+                    coord=[self._temporal_index * 2.0, fp["magnitude"] * 2.0, -fp["magnitude"] * 3.0],
                     depth=0
                 ))
-                
                 self._temporal_index += 1
-                
+        
         return fallacies
     
     def analyze_headline(self, headline: str) -> tuple[List[FallacyTelemetry], float]:
@@ -466,6 +892,93 @@ class RSSConnector:
         return ""
 
 
+class LocalLedgerConnector:
+    """
+    Local JSON file connector for zero-cost mock testing.
+    Reads simulated event packets from a local ledger file.
+    """
+    
+    def __init__(self, ledger_path: str = "mock_ledger.json"):
+        self.ledger_path = ledger_path
+        self._index = 0
+    
+    def _load_ledger(self) -> List[Dict]:
+        """Load events from local ledger file."""
+        try:
+            with open(self.ledger_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get("events", [])
+        except Exception as e:
+            print(f"[LocalLedger] Failed to load ledger: {e}", file=sys.stderr)
+            return []
+    
+    def fetch(self) -> List[Dict]:
+        """Fetch all events from local ledger."""
+        return self._load_ledger()
+    
+    def fetch_with_geocode(self, geo_transformer: GeoTransformer) -> List[PublicationMarker]:
+        """Fetch events from local ledger and geocode them."""
+        events = self._load_ledger()
+        markers = []
+        
+        for event in events:
+            headline = event.get("title", "")
+            source_url = event.get("source_url", "")
+            source_name = event.get("source_name", "")
+            raw_location = event.get("raw_location", "")
+            veracity_score = event.get("veracity_score", 1.0)
+            fallacy_types = event.get("fallacy_types", [])
+            
+            lat, lon = geo_transformer.geocode(raw_location)
+            
+            marker = PublicationMarker(
+                id="",
+                title=headline[:100],
+                headline=headline,
+                source_url=source_url,
+                source_name=source_name,
+                lat=lat,
+                lon=lon,
+                veracity_score=veracity_score,
+                fallacy_types=fallacy_types,
+                published_at=datetime.now().isoformat()
+            )
+            markers.append(marker)
+        
+        return markers
+    
+    def fetch_next(self, geo_transformer: GeoTransformer) -> Optional[PublicationMarker]:
+        """Fetch next event in round-robin fashion from ledger."""
+        events = self._load_ledger()
+        if not events:
+            return None
+        
+        event = events[self._index % len(events)]
+        self._index += 1
+        
+        headline = event.get("title", "")
+        source_url = event.get("source_url", "")
+        source_name = event.get("source_name", "")
+        raw_location = event.get("raw_location", "")
+        veracity_score = event.get("veracity_score", 1.0)
+        fallacy_types = event.get("fallacy_types", [])
+        
+        lat, lon = geo_transformer.geocode(raw_location)
+        
+        return PublicationMarker(
+            id="",
+            title=headline[:100],
+            headline=headline,
+            source_url=source_url,
+            source_name=source_name,
+            lat=lat,
+            lon=lon,
+            veracity_score=veracity_score,
+            fallacy_types=fallacy_types,
+            published_at=datetime.now().isoformat()
+        )
+
+
 class MapPressBridge:
     """
     MapPress REST API bridge for injecting markers into Map ID 2.
@@ -510,8 +1023,35 @@ class MapPressBridge:
         """
         Post a single marker to MapPress Map ID 2.
         
-        MapPress uses a custom post type 'mappress_marker'.
+        Tries multiple methods:
+        1. MapPress REST API (if plugin installed)
+        2. Generic WordPress post with MapPress metadata
+        3. JWT authentication if configured
         """
+        last_error = None
+        
+        for method in ["mappress_rest", "wp_post", "jwt_auth"]:
+            result = None
+            try:
+                if method == "mappress_rest":
+                    result = self._post_to_mappress_rest(marker)
+                elif method == "wp_post":
+                    result = self._post_as_wp_post(marker)
+                elif method == "jwt_auth":
+                    result = self._post_with_jwt(marker)
+                
+                if result and "error" not in result and result.get("id"):
+                    print(f"[MapPress] Marker posted via {method}: {result.get('id')}", file=sys.stderr)
+                    return result
+            except Exception as e:
+                last_error = str(e)
+                print(f"[MapPress] {method} failed: {last_error[:100]}", file=sys.stderr)
+                continue
+        
+        return {"error": f"All methods failed. Last error: {last_error}"}
+    
+    def _post_to_mappress_rest(self, marker: PublicationMarker) -> Dict:
+        """Try MapPress REST API endpoint."""
         url = f"{self.site_url}/wp-json/wp/v2/mappress_marker"
         
         try:
@@ -535,20 +1075,78 @@ class MapPressBridge:
             )
             
             with urllib.request.urlopen(req, timeout=30) as response:
-                result = json.loads(response.read().decode())
-                print(f"[MapPress] Marker posted: {result.get('id', 'unknown')}", file=sys.stderr)
-                return result
+                return json.loads(response.read().decode())
                 
         except urllib.error.HTTPError as e:
             error_body = e.read().decode() if e.fp else ""
-            print(f"MapPress HTTP error {e.code}: {error_body[:200]}", file=sys.stderr)
-            
-            # Fallback: Try generic WordPress post with custom fields
-            return self._post_as_wp_post(marker)
-            
+            raise Exception(f"HTTP {e.code}: {error_body[:200]}")
         except Exception as e:
-            print(f"MapPress POST error: {e}", file=sys.stderr)
-            return {"error": str(e)}
+            raise Exception(str(e))
+    
+    def _post_with_jwt(self, marker: PublicationMarker) -> Dict:
+        """Post using JWT authentication if configured."""
+        jwt_secret = (os.environ.get("JWT_WP_API_KEY", "") or 
+                     os.environ.get("JWT_WP_API_TOKEN", "") or 
+                     os.environ.get("JWT_SECRET", ""))
+        
+        jwt_user = (os.environ.get("WP_APP_USER", "") or 
+                   os.environ.get("JWT_WP_USER", "") or 
+                   os.environ.get("JWT_WP_EMAIL", "").split('@')[0] or
+                   os.environ.get("KYLOSARC_WP_EMAIL", "").split('@')[0])
+        
+        app_password = (os.environ.get("WP_App_PW_MAPAPP", "") or 
+                       os.environ.get("KYLOSARC_WP_PW", ""))
+        
+        if not jwt_secret or not jwt_user:
+            raise Exception("JWT credentials not configured")
+        
+        try:
+            token_url = f"{self.site_url}/wp-json/jwt-auth/v1/token"
+            token_data = json.dumps({
+                "username": jwt_user,
+                "password": app_password
+            }).encode()
+            
+            token_req = urllib.request.Request(token_url, data=token_data, headers={"Content-Type": "application/json"})
+            
+            with urllib.request.urlopen(token_req, timeout=30) as response:
+                token_result = json.loads(response.read().decode())
+                token = token_result.get("token", "")
+            
+            if not token:
+                raise Exception("No JWT token received")
+            
+            post_url = f"{self.site_url}/wp-json/wp/v2/posts"
+            post_data = json.dumps({
+                "title": marker.headline[:200],
+                "content": f"<!-- MapPress --><!-- MapID: {self.MAP_ID} -->\nVeracity: {marker.veracity_score:.2f} | Source: {marker.source_name}",
+                "status": "publish",
+                "meta": {
+                    "_mappress_veracity_score": str(marker.veracity_score),
+                    "_mappress_lat": str(marker.lat or 0),
+                    "_mappress_lng": str(marker.lon or 0),
+                    "_mappress_fallacy_types": ",".join(marker.fallacy_types),
+                }
+            }).encode()
+            
+            post_req = urllib.request.Request(
+                post_url,
+                data=post_data,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}"
+                },
+                method="POST"
+            )
+            
+            with urllib.request.urlopen(post_req, timeout=30) as response:
+                return json.loads(response.read().decode())
+                
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode() if e.fp else ""
+            raise Exception(f"HTTP {e.code}: {error_body[:200]}")
+        except Exception as e:
+            raise Exception(str(e))
     
     def _post_as_wp_post(self, marker: PublicationMarker) -> Dict:
         """
@@ -883,11 +1481,133 @@ def main():
     parser = argparse.ArgumentParser(description="Inverion Semantic Bridge")
     parser.add_argument("--source", "-s", help="Source file to analyze")
     parser.add_argument("--test", "-t", action="store_true", help="Run test mode")
+    parser.add_argument("--local-ledger", help="Path to local mock_ledger.json file for zero-cost testing")
+    parser.add_argument("--loop", action="store_true", help="Loop continuously when using --local-ledger")
+    parser.add_argument("--interval", type=int, default=30, help="Loop interval in seconds (default: 30)")
+    parser.add_argument("--push-markers", action="store_true", help="Push markers to WordPress")
+    parser.add_argument("--wp-site", help="WordPress site URL")
+    parser.add_argument("--wp-user", help="WordPress username")
+    parser.add_argument("--news-api", help="Query NewsAPI.org with this search term (requires NEWS_API_KEY)")
+    parser.add_argument("--newsdata-io", help="Query NewsData.io with this search term (requires NEWSDATAIO_API_KEY)")
     args = parser.parse_args()
     
     bridge = InverionBridge()
     
-    if args.test:
+    if args.local_ledger:
+        ledger_path = args.local_ledger
+        if not Path(ledger_path).exists():
+            print(f"[LocalLedger] Ledger file not found: {ledger_path}", file=sys.stderr)
+            sys.exit(1)
+        
+        connector = LocalLedgerConnector(ledger_path=ledger_path)
+        geo = GeoTransformer()
+        
+        if args.loop:
+            print(f"[LocalLedger] Starting loop mode, interval={args.interval}s", file=sys.stderr)
+            print(f"[LocalLedger] Press Ctrl+C to stop", file=sys.stderr)
+            try:
+                while True:
+                    marker = connector.fetch_next(geo)
+                    if marker:
+                        print(f"[LocalLedger] Processing: {marker.headline[:60]}...", file=sys.stderr)
+                        
+                        result = {
+                            "timestamp": time.time(),
+                            "marker": marker.to_dict(),
+                            "manifold_jump": marker.to_manifold_jump()
+                        }
+                        print(json.dumps(result), flush=True)
+                        
+                        if args.push_markers and args.wp_site and args.wp_user:
+                            wp_user = (os.environ.get("WP_APP_USER", "") or 
+                                      os.environ.get("JWT_WP_USER", "") or 
+                                      os.environ.get("JWT_WP_EMAIL", "").split('@')[0] or
+                                      os.environ.get("KYLOSARC_WP_EMAIL", "").split('@')[0] or
+                                      args.wp_user)
+                            wp_pw = (os.environ.get("WP_App_PW_MAPAPP", "") or 
+                                    os.environ.get("KYLOSARC_WP_PW", ""))
+                            if wp_pw:
+                                bridge_wp = MapPressBridge(args.wp_site, wp_user, wp_pw)
+                                push_result = bridge_wp.post_marker(marker)
+                                if "error" not in push_result:
+                                    print(f"[LocalLedger] Marker pushed: {push_result.get('id', 'unknown')}", file=sys.stderr)
+                                else:
+                                    print(f"[LocalLedger] Push failed: {push_result}", file=sys.stderr)
+                    
+                    time.sleep(args.interval)
+            except KeyboardInterrupt:
+                print("\n[LocalLedger] Loop stopped", file=sys.stderr)
+        else:
+            markers = connector.fetch_with_geocode(geo)
+            print(f"[LocalLedger] Loaded {len(markers)} markers from ledger", file=sys.stderr)
+            
+            if args.push_markers and args.wp_site and args.wp_user:
+                wp_user = (os.environ.get("WP_APP_USER", "") or 
+                          os.environ.get("JWT_WP_USER", "") or 
+                          os.environ.get("JWT_WP_EMAIL", "").split('@')[0] or
+                          os.environ.get("KYLOSARC_WP_EMAIL", "").split('@')[0] or
+                          args.wp_user)
+                wp_pw = (os.environ.get("WP_App_PW_MAPAPP", "") or 
+                        os.environ.get("KYLOSARC_WP_PW", ""))
+                if wp_pw:
+                    bridge_wp = MapPressBridge(args.wp_site, wp_user, wp_pw)
+                    count = bridge_wp.sync_markers(markers)
+                    print(f"[MapPress] Synced {count} markers to WordPress Map ID 2", file=sys.stderr)
+    
+    elif args.news_api:
+        from news_connector import NewsAPIConnector
+        connector = NewsAPIConnector()
+        geo = GeoTransformer()
+        scrubber = SemanticScrubber()
+        
+        print(f"[NewsAPI] Fetching news for: {args.news_api}", file=sys.stderr)
+        articles = connector.fetch(args.news_api)
+        print(f"[NewsAPI] Got {len(articles)} articles", file=sys.stderr)
+        
+        markers = []
+        for article in articles:
+            headline = article.get("title", "")
+            if not headline:
+                continue
+            
+            fallacies = scrubber.analyze(headline)
+            total_cost = sum(f.magnitude * f.persistence for f in fallacies)
+            veracity_score = max(0.0, VERACITY_CONSTANT - total_cost)
+            fallacy_types = [f.type for f in fallacies]
+            
+            location_hint = article.get("source", "")
+            lat, lon = geo.geocode(location_hint)
+            
+            marker = PublicationMarker(
+                id="",
+                title=headline[:100],
+                headline=headline,
+                source_url=article.get("link", ""),
+                source_name=article.get("source", "NewsAPI"),
+                lat=lat,
+                lon=lon,
+                veracity_score=veracity_score,
+                fallacy_types=fallacy_types,
+                published_at=article.get("published", "")
+            )
+            markers.append(marker)
+        
+        print(f"[NewsAPI] Processed {len(markers)} markers", file=sys.stderr)
+        
+        if args.push_markers and args.wp_site and args.wp_user:
+            wp_user = (os.environ.get("WP_APP_USER", "") or 
+                      os.environ.get("JWT_WP_USER", "") or 
+                      os.environ.get("JWT_WP_EMAIL", "").split('@')[0] or
+                      os.environ.get("KYLOSARC_WP_EMAIL", "").split('@')[0] or
+                      args.wp_user)
+            wp_pw = (os.environ.get("WP_App_PW_MAPAPP", "") or 
+                    os.environ.get("KYLOSARC_WP_PW", ""))
+            if wp_pw:
+                bridge_wp = MapPressBridge(args.wp_site, wp_user, wp_pw)
+                count = bridge_wp.sync_markers(markers)
+                print(f"[MapPress] Synced {count} markers to WordPress Map ID 2", file=sys.stderr)
+    
+    elif args.test:
         # Test with sample input
         test_inputs = [
             "You should believe me because I am always right.",
