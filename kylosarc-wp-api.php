@@ -15,25 +15,32 @@ add_action('rest_api_init', function() {
         'permission_callback' => '__return_true'
     ));
     
-    // Post marker endpoint
+    // Post marker endpoint - supports both Application Password Basic Auth and X-API-Key
     register_rest_route('kylosarc/v1', '/marker', array(
         'methods'  => 'POST',
         'callback' => 'kylosarc_post_marker',
-        'permission_callback' => 'kylosarc_verify_api_key'
+        'permission_callback' => 'kylosarc_authenticate'
     ));
     
 });
 
 define('KYLOSARC_API_KEY', 'YOUR_SECRET_KEY_HERE');
 
-function kylosarc_verify_api_key($request) {
+function kylosarc_authenticate($request) {
+    // Check X-API-Key header first (custom auth)
     $api_key = $request->get_header('X-API-Key');
-    
-    if ($api_key !== KYLOSARC_API_KEY) {
-        return new WP_Error('unauthorized', 'Invalid API key', array('status' => 401));
+    if ($api_key === KYLOSARC_API_KEY) {
+        return true;
     }
     
-    return true;
+    // Fall back to WordPress Application Password (Basic Auth)
+    // When using Basic Auth, WordPress sets current_user after auth
+    $auth = $request->get_header('Authorization');
+    if ($auth && strpos($auth, 'Basic ') === 0) {
+        return true;
+    }
+    
+    return new WP_Error('unauthorized', 'Invalid credentials', array('status' => 401));
 }
 
 function kylosarc_verify(WP_REST_Request $request) {
