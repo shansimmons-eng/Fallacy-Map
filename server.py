@@ -1489,6 +1489,7 @@ def main():
     parser.add_argument("--wp-user", help="WordPress username")
     parser.add_argument("--news-api", help="Query NewsAPI.org with this search term (requires NEWS_API_KEY)")
     parser.add_argument("--newsdata-io", help="Query NewsData.io with this search term (requires NEWSDATAIO_API_KEY)")
+    parser.add_argument("--mediastack", help="Query MediaStack with this search term (requires MEDIASTACK_NEWS_API_KEY)")
     args = parser.parse_args()
     
     bridge = InverionBridge()
@@ -1524,8 +1525,7 @@ def main():
                                       os.environ.get("JWT_WP_EMAIL", "").split('@')[0] or
                                       os.environ.get("KYLOSARC_WP_EMAIL", "").split('@')[0] or
                                       args.wp_user)
-                            wp_pw = (os.environ.get("WP_App_PW_MAPAPP", "") or 
-                                    os.environ.get("KYLOSARC_WP_PW", ""))
+                            wp_pw = os.environ.get("WP_App_PW_MAPAPP", "") or os.environ.get("KYLOSARC_WP_PW", "")
                             if wp_pw:
                                 bridge_wp = MapPressBridge(args.wp_site, wp_user, wp_pw)
                                 push_result = bridge_wp.post_marker(marker)
@@ -1547,8 +1547,7 @@ def main():
                           os.environ.get("JWT_WP_EMAIL", "").split('@')[0] or
                           os.environ.get("KYLOSARC_WP_EMAIL", "").split('@')[0] or
                           args.wp_user)
-                wp_pw = (os.environ.get("WP_App_PW_MAPAPP", "") or 
-                        os.environ.get("KYLOSARC_WP_PW", ""))
+                wp_pw = os.environ.get("WP_App_PW_MAPAPP", "") or os.environ.get("KYLOSARC_WP_PW", "")
                 if wp_pw:
                     bridge_wp = MapPressBridge(args.wp_site, wp_user, wp_pw)
                     count = bridge_wp.sync_markers(markers)
@@ -1593,6 +1592,59 @@ def main():
             markers.append(marker)
         
         print(f"[NewsAPI] Processed {len(markers)} markers", file=sys.stderr)
+        
+        if args.push_markers and args.wp_site and args.wp_user:
+            wp_user = (os.environ.get("WP_APP_USER", "") or 
+                      os.environ.get("JWT_WP_USER", "") or 
+                      os.environ.get("JWT_WP_EMAIL", "").split('@')[0] or
+                      os.environ.get("KYLOSARC_WP_EMAIL", "").split('@')[0] or
+                      args.wp_user)
+            wp_pw = (os.environ.get("WP_App_PW_MAPAPP", "") or 
+                    os.environ.get("KYLOSARC_WP_PW", ""))
+            if wp_pw:
+                bridge_wp = MapPressBridge(args.wp_site, wp_user, wp_pw)
+                count = bridge_wp.sync_markers(markers)
+                print(f"[MapPress] Synced {count} markers to WordPress Map ID 2", file=sys.stderr)
+    
+    elif args.mediastack:
+        from news_connector import MediaStackConnector
+        connector = MediaStackConnector()
+        geo = GeoTransformer()
+        scrubber = SemanticScrubber()
+        
+        print(f"[MediaStack] Fetching news for: {args.mediastack}", file=sys.stderr)
+        articles = connector.fetch(args.mediastack)
+        print(f"[MediaStack] Got {len(articles)} articles", file=sys.stderr)
+        
+        markers = []
+        for article in articles:
+            headline = article.get("title", "")
+            if not headline:
+                continue
+            
+            fallacies = scrubber.analyze(headline)
+            total_cost = sum(f.magnitude * f.persistence for f in fallacies)
+            veracity_score = max(0.0, VERACITY_CONSTANT - total_cost)
+            fallacy_types = [f.type for f in fallacies]
+            
+            location_hint = article.get("source", "")
+            lat, lon = geo.geocode(location_hint)
+            
+            marker = PublicationMarker(
+                id="",
+                title=headline[:100],
+                headline=headline,
+                source_url=article.get("link", ""),
+                source_name=article.get("source", "MediaStack"),
+                lat=lat,
+                lon=lon,
+                veracity_score=veracity_score,
+                fallacy_types=fallacy_types,
+                published_at=article.get("published", "")
+            )
+            markers.append(marker)
+        
+        print(f"[MediaStack] Processed {len(markers)} markers", file=sys.stderr)
         
         if args.push_markers and args.wp_site and args.wp_user:
             wp_user = (os.environ.get("WP_APP_USER", "") or 

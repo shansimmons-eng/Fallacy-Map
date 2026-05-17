@@ -5,6 +5,7 @@ News API Connectors for live news ingestion.
 Supports:
 - NewsAPI.org (NEWS_API_KEY)
 - NewsData.io (NEWSDATAIO_API_KEY)
+- MediaStack (MEDIASTACK_NEWS_API_KEY)
 
 Usage:
     python3 -c "from news_connector import NewsAPIConnector; c = NewsAPIConnector(); articles = c.fetch('climate change')"
@@ -224,6 +225,111 @@ class NewsDataIOConnector:
             return []
 
 
+class MediaStackConnector:
+    """
+    MediaStack connector.
+    
+    Docs: https://mediastack.com/documentation
+    Free tier: 500 requests/month, 100/day
+    
+    Set MEDIASTACK_NEWS_API_KEY in .env or environment.
+    """
+    
+    BASE_URL = "http://api.mediastack.com/v1"
+    
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or os.environ.get("MEDIASTACK_NEWS_API_KEY", "")
+        if not self.api_key:
+            print("[MediaStack] WARNING: No API key set (MEDIASTACK_NEWS_API_KEY)", file=__import__('sys').stderr)
+        self._last_request = 0.0
+        self.MIN_REQUEST_INTERVAL = 1.0
+    
+    def _rate_limit(self):
+        """Enforce rate limiting."""
+        elapsed = time.time() - self._last_request
+        if elapsed < self.MIN_REQUEST_INTERVAL:
+            time.sleep(self.MIN_REQUEST_INTERVAL - elapsed)
+        self._last_request = time.time()
+    
+    def fetch(self, query: str, language: str = "en", sources: str = "", categories: str = "") -> List[Dict]:
+        """Fetch news articles matching query."""
+        if not self.api_key:
+            return []
+        
+        self._rate_limit()
+        
+        params = {
+            "access_key": self.api_key,
+            "keywords": query,
+            "languages": language,
+            "sort": "published_desc",
+            "limit": 100,
+        }
+        if sources:
+            params["sources"] = sources
+        if categories:
+            params["categories"] = categories
+        
+        url = f"{self.BASE_URL}/news?{urllib.parse.urlencode(params)}"
+        
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "InverionSemanticBridge/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                data = json.loads(response.read().decode())
+                articles = data.get("data", [])
+                return [
+                    {
+                        "title": a.get("title", ""),
+                        "link": a.get("url", ""),
+                        "source": a.get("source", "Unknown"),
+                        "published": a.get("published_at", ""),
+                        "description": a.get("description", ""),
+                        "image": a.get("image", ""),
+                    }
+                    for a in articles if a.get("title")
+                ]
+        except Exception as e:
+            print(f"[MediaStack] Fetch error: {e}", file=__import__('sys').stderr)
+            return []
+    
+    def fetch_latest(self, category: str = "general", country: str = "us") -> List[Dict]:
+        """Fetch latest news by category."""
+        if not self.api_key:
+            return []
+        
+        self._rate_limit()
+        
+        params = {
+            "access_key": self.api_key,
+            "languages": "en",
+            "sort": "published_desc",
+            "limit": 100,
+        }
+        if category:
+            params["categories"] = category
+        
+        url = f"{self.BASE_URL}/news?{urllib.parse.urlencode(params)}"
+        
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "InverionSemanticBridge/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                data = json.loads(response.read().decode())
+                articles = data.get("data", [])
+                return [
+                    {
+                        "title": a.get("title", ""),
+                        "link": a.get("url", ""),
+                        "source": a.get("source", "Unknown"),
+                        "published": a.get("published_at", ""),
+                        "description": a.get("description", ""),
+                    }
+                    for a in articles if a.get("title")
+                ]
+        except Exception as e:
+            print(f"[MediaStack] Latest error: {e}", file=__import__('sys').stderr)
+            return []
+
+
 class RSSConnector:
     """RSS/Atom feed connector."""
     
@@ -274,9 +380,11 @@ if __name__ == "__main__":
     
     newsapi = NewsAPIConnector()
     newsdata = NewsDataIOConnector()
+    mediastack = MediaStackConnector()
     
     print(f"\nNewsAPI key set: {bool(newsapi.api_key)}")
     print(f"NewsDataIO key set: {bool(newsdata.api_key)}")
+    print(f"MediaStack key set: {bool(mediastack.api_key)}")
     
     if newsapi.api_key:
         print("\nTesting NewsAPI fetch...")
@@ -288,6 +396,13 @@ if __name__ == "__main__":
     if newsdata.api_key:
         print("\nTesting NewsDataIO fetch...")
         articles = newsdata.fetch_latest(category="technology")
+        print(f"  Got {len(articles)} articles")
+        if articles:
+            print(f"  Sample: {articles[0]['title'][:60]}...")
+    
+    if mediastack.api_key:
+        print("\nTesting MediaStack fetch...")
+        articles = mediastack.fetch_latest(category="technology")
         print(f"  Got {len(articles)} articles")
         if articles:
             print(f"  Sample: {articles[0]['title'][:60]}...")
